@@ -110,8 +110,7 @@ public:
     static bool HandleReloadRotationsCommand(ChatHandler* handler)
     {
         uint32 specs = sRotationEngine.LoadFromDB();
-        handler->PSendSysMessage("|cff00ff00RPGBots: Reloaded {} specs, {} total rotation entries.|r",
-            specs, sRotationEngine.GetEntryCount());
+        handler->PSendSysMessage("|cff00ff00RPGBots: Reloaded {} spec(s) from bot_rotations.|r", specs);
         return true;
     }
 
@@ -122,8 +121,8 @@ public:
     {
         if (!classArg || !specArg)
         {
-            handler->PSendSysMessage("|cff00ff00RPGBots Rotation Engine: {} specs loaded, {} entries.|r",
-                sRotationEngine.GetSpecCount(), sRotationEngine.GetEntryCount());
+            handler->PSendSysMessage("|cff00ff00RPGBots: {} specs loaded.|r",
+                sRotationEngine.GetSpecCount());
             handler->PSendSysMessage("Usage: .rpg rotation <class_id> <spec_index>");
             return true;
         }
@@ -131,26 +130,29 @@ public:
         const SpecRotation* rot = sRotationEngine.GetRotation(*classArg, *specArg);
         if (!rot)
         {
-            handler->PSendSysMessage("|cffff0000No rotation found for class {} spec {}.|r",
+            handler->PSendSysMessage("|cffff0000No rotation for class {} spec {}.|r",
                 *classArg, *specArg);
             return true;
         }
 
-        handler->PSendSysMessage("|cff00ff00=== {} ({}) ===", rot->specName, BotRoleName(rot->role));
-        handler->PSendSysMessage("Range: {} yd  |  {}", rot->preferredRange, rot->description);
+        handler->PSendSysMessage("|cff00ff00=== {} ({}) — range {} yd ===|r",
+            rot->specName, BotRoleName(rot->role), rot->preferredRange);
 
-        auto showBucket = [&](const char* name, const std::vector<RotationEntry>& entries)
+        auto showSlots = [&](const char* label, const std::array<uint32, SPELLS_PER_BUCKET>& arr)
         {
-            if (entries.empty()) return;
-            handler->PSendSysMessage("|cffffcc00--- {} ({}) ---|r", name, entries.size());
-            for (const auto& e : entries)
-                handler->PSendSysMessage("  [{}] {} (ID: {})", e.priorityOrder, e.spellName, e.spellId);
+            std::string line = std::string(label) + ":";
+            for (uint32 id : arr)
+            {
+                if (id == 0) continue;
+                line += " " + std::to_string(id);
+            }
+            handler->PSendSysMessage("{}", line);
         };
 
-        showBucket("Maintenance", rot->maintenance);
-        showBucket("Defensive",   rot->defensive);
-        showBucket("Rotation",    rot->rotation);
-        showBucket("Utility",     rot->utility);
+        showSlots("Abilities",  rot->abilities);
+        showSlots("Buffs",      rot->buffs);
+        showSlots("Defensives", rot->defensives);
+        showSlots("Mobility",   rot->mobility);
 
         return true;
     }

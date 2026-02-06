@@ -1,17 +1,16 @@
 // BotAI.cpp
-// Priority-Queue AI: We don't script fights; we give the bot a list of
-// priorities divided into Maintenance, Defense, Offense, and Utility.
-// The bot simply "fills the gaps" by casting the highest-priority spell
-// available in its table.
+// Dead-simple priority-queue AI.  One SQL row per spec, 20 spells, 4 buckets.
 //
-// The four-bucket waterfall runs every AI tick:
-//   1. MAINTENANCE — "Is my tax paid?" (buffs, DoTs)
-//   2. DEFENSIVE   — "Am I dying?"     (emergency CDs, self-heals)
-//   3. ROTATION    — "What do I press?" (core DPS/heal priority list)
-//   4. UTILITY     — "Where should I be?" (gap closers, CC, dispels)
+// The waterfall every tick:
+//   1. BUFFS       — cast on self if aura missing
+//   2. DEFENSIVES  — cast on self if HP < 35%
+//   3. ABILITIES   — role decides the target:
+//                      healer  → lowest-HP ally under 90%
+//                      dps     → master's enemy target
+//                      tank    → master's enemy target
+//   4. MOBILITY    — cast on self if out of preferred range
 //
-// All spell data comes from rpgbots.bot_rotation_entries (SQL).
-// No recompile needed to change rotations — `.rpg reload` in-game.
+// One cast per tick.  First valid spell wins.  No branching spaghetti.
 
 #include "BotAI.h"
 #include "BotBehavior.h"
@@ -23,34 +22,28 @@
 #include "Group.h"
 #include "Log.h"
 #include "Chat.h"
-#include "Pet.h"
 #include <cmath>
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
-static constexpr uint32  AI_UPDATE_INTERVAL_MS = 1000;
-static constexpr float   FOLLOW_DISTANCE       = 4.0f;
-static constexpr float   FOLLOW_ANGLE          = float(M_PI);
-static constexpr float   MAX_FOLLOW_DISTANCE   = 40.0f;
-static constexpr float   COMBAT_CHASE_DIST     = 5.0f;
-static constexpr float   RANGED_STOP_DIST      = 25.0f;
-static constexpr float   BOT_MELEE_RANGE       = 8.0f;
+static constexpr uint32 AI_UPDATE_INTERVAL_MS = 1000;
+static constexpr float  FOLLOW_DISTANCE       = 4.0f;
+static constexpr float  FOLLOW_ANGLE          = float(M_PI);
+static constexpr float  MAX_FOLLOW_DISTANCE   = 40.0f;
+static constexpr float  COMBAT_CHASE_MELEE    = 5.0f;
+static constexpr float  COMBAT_CHASE_RANGED   = 25.0f;
+static constexpr float  HEAL_THRESHOLD_PCT    = 90.0f;
+static constexpr float  DEFENSIVE_HP_PCT      = 35.0f;
 
 // ─── Role Auto-Detection ───────────────────────────────────────────────────────
-// If the rotation engine has metadata for this class/spec, use its role.
-// Otherwise fall back to AzerothCore's built-in spec detection.
 
 BotRole DetectBotRole(Player* bot)
 {
-    if (!bot)
-        return BotRole::ROLE_MELEE_DPS;
+    if (!bot) return BotRole::ROLE_MELEE_DPS;
 
-    // Prefer SQL-defined role
     uint8 specIdx = bot->GetMostPointsTalentTree();
     const SpecRotation* rot = sRotationEngine.GetRotation(bot->getClass(), specIdx);
-    if (rot)
-        return rot->role;
+    if (rot) return rot->role;
 
-    // Fallback: core helpers
     if (bot->HasTankSpec())   return BotRole::ROLE_TANK;
     if (bot->HasHealSpec())   return BotRole::ROLE_HEALER;
     if (bot->HasCasterSpec()) return BotRole::ROLE_RANGED_DPS;
@@ -67,208 +60,143 @@ BotRole DetectBotRole(Player* bot)
 
 uint8 DetectSpecIndex(Player* bot)
 {
-    if (!bot) return 0;
-    return bot->GetMostPointsTalentTree();
+    return bot ? bot->GetMostPointsTalentTree() : 0;
 }
 
-// ─── Geometry Helpers ──────────────────────────────────────────────────────────
+// ─── Helpers ───────────────────────────────────────────────────────────────────
 
-static float GetDistance2D(Player* a, Unit* b)
+static float Dist2D(Unit* a, Unit* b)
 {
-    if (!a || !b || a->GetMapId() != b->GetMapId())
-        return 99999.0f;
+    if (!a || !b || a->GetMapId() != b->GetMapId()) return 99999.f;
     float dx = a->GetPositionX() - b->GetPositionX();
     float dy = a->GetPositionY() - b->GetPositionY();
     return std::sqrt(dx * dx + dy * dy);
 }
 
-static void TeleportBotToMaster(Player* bot, Player* master)
+static void TeleportToMaster(Player* bot, Player* master)
 {
-    if (!bot || !master) return;
-
-    float angle = frand(0.0f, 2.0f * float(M_PI));
-    float dist  = frand(2.0f, 4.0f);
-    float x = master->GetPositionX() + dist * std::cos(angle);
-    float y = master->GetPositionY() + dist * std::sin(angle);
+    float ang = frand(0.f, 2.f * float(M_PI));
+    float d   = frand(2.f, 4.f);
+    float x = master->GetPositionX() + d * std::cos(ang);
+    float y = master->GetPositionY() + d * std::sin(ang);
     float z = master->GetPositionZ();
-
     if (bot->GetMapId() != master->GetMapId())
         bot->TeleportTo(master->GetMapId(), x, y, z, master->GetOrientation());
     else
         bot->NearTeleportTo(x, y, z, master->GetOrientation());
 }
 
-// ─── Party Helpers ─────────────────────────────────────────────────────────────
-
-static Player* FindLowestHPMember(Player* bot, Player* master)
+// Find party member with lowest HP% (same map, alive)
+static Player* FindLowestHP(Player* bot, Player* master)
 {
-    Group* group = master->GetGroup();
-    if (!group) return nullptr;
+    Group* grp = master->GetGroup();
+    if (!grp) return nullptr;
 
-    Player* lowest = nullptr;
-    float lowestPct = 100.0f;
-
-    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    Player* lowest   = nullptr;
+    float   lowPct   = 100.f;
+    for (GroupReference* ref = grp->GetFirstMember(); ref; ref = ref->next())
     {
-        Player* member = ref->GetSource();
-        if (!member || !member->IsAlive() || !member->IsInWorld())
-            continue;
-        if (member->GetMapId() != bot->GetMapId())
-            continue;
-        float pct = member->GetHealthPct();
-        if (pct < lowestPct)
-        {
-            lowestPct = pct;
-            lowest = member;
-        }
+        Player* m = ref->GetSource();
+        if (!m || !m->IsAlive() || !m->IsInWorld()) continue;
+        if (m->GetMapId() != bot->GetMapId()) continue;
+        float pct = m->GetHealthPct();
+        if (pct < lowPct) { lowPct = pct; lowest = m; }
     }
     return lowest;
 }
 
-static Player* FindPartyTank(Player* bot, Player* master)
+// ─── Try to cast one spell ─────────────────────────────────────────────────────
+// Returns true if the spell was successfully cast.
+
+static bool TryCast(Player* bot, Unit* target, uint32 spellId)
 {
-    Group* group = master->GetGroup();
-    if (!group) return master;
+    if (spellId == 0)          return false;
+    if (!target)               return false;
+    if (!bot->HasSpell(spellId))       return false;
+    if (bot->HasSpellCooldown(spellId)) return false;
 
-    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
-    {
-        Player* member = ref->GetSource();
-        if (!member || !member->IsAlive()) continue;
-
-        BotInfo* info = sBotMgr.FindBot(member->GetGUID());
-        if (info && info->role == BotRole::ROLE_TANK)
-            return member;
-    }
-    return master;
+    return bot->CastSpell(target, spellId, false) == SPELL_CAST_OK;
 }
 
-// ─── Condition Evaluation ──────────────────────────────────────────────────────
-// The heart of the data-driven system.  Each RotationEntry has a
-// condition_type + condition_value.  Returns true when the condition is met.
+// ─── Bucket Runners ────────────────────────────────────────────────────────────
+// Each bucket scans its 5 slots. First valid cast wins → return true.
 
-static bool EvaluateCondition(Player* bot, Unit* target,
-                              RotationCondition cond, int32 condValue)
+// Buffs: cast on SELF if the aura is missing
+static bool RunBuffs(Player* bot, const std::array<uint32, SPELLS_PER_BUCKET>& spells)
 {
-    switch (cond)
+    for (uint32 id : spells)
     {
-        case RotationCondition::NONE:
-            return true;
-
-        case RotationCondition::HEALTH_BELOW:
-            return bot->GetHealthPct() < float(condValue);
-
-        case RotationCondition::HEALTH_ABOVE:
-            return bot->GetHealthPct() > float(condValue);
-
-        case RotationCondition::MANA_BELOW:
-            return bot->GetPower(POWER_MANA) * 100 /
-                   std::max(bot->GetMaxPower(POWER_MANA), 1u) < uint32(condValue);
-
-        case RotationCondition::MANA_ABOVE:
-            return bot->GetPower(POWER_MANA) * 100 /
-                   std::max(bot->GetMaxPower(POWER_MANA), 1u) > uint32(condValue);
-
-        case RotationCondition::TARGET_HEALTH_BELOW:
-            return target && target->GetHealthPct() < float(condValue);
-
-        case RotationCondition::TARGET_HEALTH_ABOVE:
-            return target && target->GetHealthPct() > float(condValue);
-
-        case RotationCondition::HAS_AURA:
-            return bot->HasAura(uint32(condValue));
-
-        case RotationCondition::MISSING_AURA:
-            return !bot->HasAura(uint32(condValue));
-
-        case RotationCondition::TARGET_HAS_AURA:
-            return target && target->HasAura(uint32(condValue));
-
-        case RotationCondition::TARGET_MISSING_AURA:
-            return target && !target->HasAura(uint32(condValue));
-
-        case RotationCondition::IN_MELEE_RANGE:
-            return target && GetDistance2D(bot, target) <= BOT_MELEE_RANGE;
-
-        case RotationCondition::NOT_IN_MELEE_RANGE:
-            return target && GetDistance2D(bot, target) > BOT_MELEE_RANGE;
+        if (id == 0) continue;
+        if (bot->HasAura(id))  continue;                 // already have it
+        if (TryCast(bot, bot, id)) return true;
     }
-    return true;
+    return false;
 }
 
-// ─── Resolve Target ────────────────────────────────────────────────────────────
-// Translates a RotationEntry's target_type enum into an actual Unit*.
-
-static Unit* ResolveTarget(Player* bot, Player* master, Unit* enemy,
-                           RotationTarget targetType)
+// Defensives: cast on SELF only when HP < threshold
+static bool RunDefensives(Player* bot, const std::array<uint32, SPELLS_PER_BUCKET>& spells)
 {
-    switch (targetType)
+    if (bot->GetHealthPct() >= DEFENSIVE_HP_PCT)
+        return false; // not in danger, skip entire bucket
+
+    for (uint32 id : spells)
     {
-        case RotationTarget::ENEMY:
-            return enemy;
+        if (id == 0) continue;
+        if (TryCast(bot, bot, id)) return true;
+    }
+    return false;
+}
 
-        case RotationTarget::SELF:
-            return bot;
+// Abilities: target depends on role
+//   healer  → lowest-HP party member below HEAL_THRESHOLD_PCT
+//   others  → enemy (master's target)
+static bool RunAbilities(Player* bot, Player* master, Unit* enemy,
+                         BotRole role,
+                         const std::array<uint32, SPELLS_PER_BUCKET>& spells)
+{
+    if (role == BotRole::ROLE_HEALER)
+    {
+        Player* healTarget = FindLowestHP(bot, master);
+        if (!healTarget || healTarget->GetHealthPct() >= HEAL_THRESHOLD_PCT)
+            return false; // nobody needs healing
 
-        case RotationTarget::FRIENDLY_LOWEST_HP:
-            return FindLowestHPMember(bot, master);
-
-        case RotationTarget::FRIENDLY_TANK:
-            return FindPartyTank(bot, master);
-
-        case RotationTarget::PET:
+        for (uint32 id : spells)
         {
-            Pet* pet = bot->GetPet();
-            return pet ? static_cast<Unit*>(pet) : static_cast<Unit*>(bot);
+            if (id == 0) continue;
+            if (TryCast(bot, healTarget, id)) return true;
         }
+        return false;
     }
-    return enemy;
-}
 
-// ─── Try One Entry ─────────────────────────────────────────────────────────────
-// Checks: spell known? off cooldown? condition met? target valid?
-// If all pass → cast → return true.
-
-static bool TryEntry(Player* bot, Player* master, Unit* enemy,
-                     const RotationEntry& entry)
-{
-    if (!bot->HasSpell(entry.spellId))
-        return false;
-
-    if (bot->HasSpellCooldown(entry.spellId))
-        return false;
-
-    Unit* target = ResolveTarget(bot, master, enemy, entry.targetType);
-    if (!target)
-        return false;
-
-    if (!EvaluateCondition(bot, target, entry.conditionType, entry.conditionValue))
-        return false;
-
-    SpellCastResult result = bot->CastSpell(target, entry.spellId, false);
-    return result == SPELL_CAST_OK;
-}
-
-// ─── Run One Bucket ────────────────────────────────────────────────────────────
-// Scans top-to-bottom, returns true on first successful cast.
-
-static bool RunBucket(Player* bot, Player* master, Unit* enemy,
-                      const std::vector<RotationEntry>& entries)
-{
-    for (const auto& entry : entries)
+    // DPS / Tank: cast on enemy
+    if (!enemy) return false;
+    for (uint32 id : spells)
     {
-        if (TryEntry(bot, master, enemy, entry))
-            return true;
+        if (id == 0) continue;
+        if (TryCast(bot, enemy, id)) return true;
+    }
+    return false;
+}
+
+// Mobility: cast on SELF if we're out of preferred range of the enemy
+static bool RunMobility(Player* bot, Unit* enemy, float preferredRange,
+                        const std::array<uint32, SPELLS_PER_BUCKET>& spells)
+{
+    if (!enemy) return false;
+    // Only trigger if we're significantly farther than preferred range
+    float dist = Dist2D(bot, enemy);
+    if (dist <= preferredRange + 5.f) return false; // close enough
+
+    for (uint32 id : spells)
+    {
+        if (id == 0) continue;
+        if (TryCast(bot, bot, id)) return true;
     }
     return false;
 }
 
 // ─── The Waterfall ─────────────────────────────────────────────────────────────
-//   1. Maintenance — buffs/dots: "Is my tax paid?"
-//   2. Defensive   — emergencies: "Am I dying?"
-//   3. Rotation    — core spells: "What do I press?"
-//   4. Utility     — CC/misc:     "Anything else useful?"
-//
-// One cast per tick.  If bucket 1 fires, we skip the rest.
+// One cast per tick.  Buffs → Defensives → Abilities → Mobility.
 
 static void RunWaterfall(Player* bot, Player* master, Unit* enemy,
                          const SpecRotation* rot)
@@ -276,71 +204,70 @@ static void RunWaterfall(Player* bot, Player* master, Unit* enemy,
     if (bot->HasUnitState(UNIT_STATE_CASTING))
         return;
 
-    if (RunBucket(bot, master, enemy, rot->maintenance))
+    // 1. Buffs — "Is my tax paid?"
+    if (RunBuffs(bot, rot->buffs))
         return;
 
-    if (RunBucket(bot, master, enemy, rot->defensive))
+    // 2. Defensives — "Am I dying?"
+    if (RunDefensives(bot, rot->defensives))
         return;
 
-    if (RunBucket(bot, master, enemy, rot->rotation))
+    // 3. Abilities — "What do I press?"
+    if (RunAbilities(bot, master, enemy, rot->role, rot->abilities))
         return;
 
-    RunBucket(bot, master, enemy, rot->utility);
+    // 4. Mobility — "Can I get in range?"
+    RunMobility(bot, enemy, rot->preferredRange, rot->mobility);
 }
 
-// ─── Per-Bot AI Update ─────────────────────────────────────────────────────────
+// ─── Per-Bot Update ────────────────────────────────────────────────────────────
 
 static void UpdateBotAI(BotInfo& info, Player* master)
 {
     Player* bot = info.player;
-    if (!bot || !bot->IsInWorld() || !bot->IsAlive())
-        return;
-    if (!master || !master->IsInWorld())
-        return;
+    if (!bot || !bot->IsInWorld() || !bot->IsAlive()) return;
+    if (!master || !master->IsInWorld()) return;
 
-    // SQL rotation for this bot's class/spec
     const SpecRotation* rot = sRotationEngine.GetRotation(
         bot->getClass(), info.specIndex);
 
-    // ── Combat ─────────────────────────────────────────────────────────────
-    Unit* masterTarget = master->GetVictim();
-    if (!masterTarget)
-        masterTarget = master->GetSelectedUnit();
+    // ── Resolve enemy target ───────────────────────────────────────────────
+    Unit* enemy = master->GetVictim();
+    if (!enemy) enemy = master->GetSelectedUnit();
 
     bool masterInCombat = master->IsInCombat();
 
-    if (masterInCombat && masterTarget && masterTarget->IsAlive() &&
-        masterTarget->IsInWorld() && !masterTarget->IsPlayer())
+    // ── Combat ─────────────────────────────────────────────────────────────
+    if (masterInCombat && enemy && enemy->IsAlive() &&
+        enemy->IsInWorld() && !enemy->IsPlayer())
     {
-        // Engage
-        if (!info.isInCombat || bot->GetVictim() != masterTarget)
+        if (!info.isInCombat || bot->GetVictim() != enemy)
         {
             info.isInCombat  = true;
             info.isFollowing = false;
 
             bool melee = (info.role == BotRole::ROLE_MELEE_DPS ||
                           info.role == BotRole::ROLE_TANK);
+            bot->Attack(enemy, melee);
 
-            bot->Attack(masterTarget, melee);
-
-            float chaseDist = melee ? COMBAT_CHASE_DIST : RANGED_STOP_DIST;
+            float chase = melee ? COMBAT_CHASE_MELEE : COMBAT_CHASE_RANGED;
             if (rot && rot->preferredRange > 0)
-                chaseDist = rot->preferredRange;
+                chase = rot->preferredRange;
 
             bot->GetMotionMaster()->Clear();
-            bot->GetMotionMaster()->MoveChase(masterTarget, chaseDist);
+            bot->GetMotionMaster()->MoveChase(enemy, chase);
         }
 
         // Run the waterfall
         if (rot)
-            RunWaterfall(bot, master, masterTarget, rot);
+            RunWaterfall(bot, master, enemy, rot);
 
         return;
     }
 
-    // ── Out-of-combat: still run maintenance for self-buffs ────────────────
+    // ── Out of combat: keep buffs rolling ──────────────────────────────────
     if (rot && !bot->HasUnitState(UNIT_STATE_CASTING))
-        RunBucket(bot, master, nullptr, rot->maintenance);
+        RunBuffs(bot, rot->buffs);
 
     // ── Leave-combat transition ────────────────────────────────────────────
     if (info.isInCombat)
@@ -351,11 +278,11 @@ static void UpdateBotAI(BotInfo& info, Player* master)
     }
 
     // ── Follow master ──────────────────────────────────────────────────────
-    float dist = GetDistance2D(bot, master);
+    float dist = Dist2D(bot, master);
 
     if (dist > MAX_FOLLOW_DISTANCE || bot->GetMapId() != master->GetMapId())
     {
-        TeleportBotToMaster(bot, master);
+        TeleportToMaster(bot, master);
         info.isFollowing = false;
         return;
     }
@@ -368,7 +295,7 @@ static void UpdateBotAI(BotInfo& info, Player* master)
     }
 }
 
-// ─── World Script: AI Update Loop ─────────────────────────────────────────────
+// ─── World Script: tick loop ───────────────────────────────────────────────────
 class BotAIWorldScript : public WorldScript
 {
 public:
@@ -377,20 +304,17 @@ public:
     void OnUpdate(uint32 diff) override
     {
         _timer += diff;
-        if (_timer < AI_UPDATE_INTERVAL_MS)
-            return;
+        if (_timer < AI_UPDATE_INTERVAL_MS) return;
         _timer = 0;
 
-        auto& allBots = sBotMgr.GetAll();
-        if (allBots.empty())
-            return;
+        auto& all = sBotMgr.GetAll();
+        if (all.empty()) return;
 
-        for (auto& [masterLow, bots] : allBots)
+        for (auto& [masterLow, bots] : all)
         {
-            ObjectGuid masterGuid = ObjectGuid::Create<HighGuid::Player>(masterLow);
-            Player* master = ObjectAccessor::FindPlayer(masterGuid);
-            if (!master || !master->IsInWorld())
-                continue;
+            ObjectGuid mg = ObjectGuid::Create<HighGuid::Player>(masterLow);
+            Player* master = ObjectAccessor::FindPlayer(mg);
+            if (!master || !master->IsInWorld()) continue;
 
             for (auto& info : bots)
                 UpdateBotAI(info, master);
