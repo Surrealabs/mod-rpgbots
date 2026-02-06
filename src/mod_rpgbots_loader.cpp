@@ -13,8 +13,15 @@ void AddBotSessionSystem();
 
 void AddArmyOfAlts();
 
+void AddBotPaladin();
+void AddBotWarlock();
+
 void Addmod_rpgbotsScripts()
 {
+    // Class behavior profiles (register first so they're available to other systems)
+    AddBotPaladin();
+    AddBotWarlock();
+
     Addmod_rpgbots_PersonalitySystem();
     AddRPGbotsCommands();
     AddCustomPsychology();
