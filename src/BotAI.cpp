@@ -22,6 +22,7 @@
 #include "Group.h"
 #include "Log.h"
 #include "Chat.h"
+#include "SpellAuras.h"
 #include <cmath>
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
@@ -125,7 +126,7 @@ static bool TryCast(Player* bot, Unit* target, uint32 spellId)
 static constexpr uint32 WARLOCK_METAMORPHOSIS = 47241;
 static constexpr float  META_MANA_THRESHOLD   = 80.0f;
 
-// Buffs: cast on SELF if the aura is missing
+// Buffs: cast on SELF if the aura is missing — ONLY during combat
 static bool RunBuffs(Player* bot, const std::array<uint32, SPELLS_PER_BUCKET>& spells)
 {
     for (uint32 id : spells)
@@ -314,9 +315,8 @@ static void UpdateBotAI(BotInfo& info, Player* master)
         return;
     }
 
-    // ── Out of combat: keep buffs rolling ──────────────────────────────────
-    if (rot && !bot->HasUnitState(UNIT_STATE_CASTING))
-        RunBuffs(bot, rot->buffs);
+    // ── Out of combat ──────────────────────────────────────────────────────
+    // Don't cast buffs out of combat — saves cooldowns for actual fights
 
     // ── Leave-combat transition ────────────────────────────────────────────
     if (info.isInCombat)

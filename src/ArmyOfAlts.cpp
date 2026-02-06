@@ -203,10 +203,28 @@ static void DismissOneBot(BotInfo& entry)
 
     LOG_INFO("module", "RPGBots: Dismissing bot {}", bot->GetName());
 
-    // Grab identifiers before any cleanup
     ObjectGuid::LowType guidLow = bot->GetGUID().GetCounter();
 
-    // ── Phase 1: stop all activity while still fully valid ─────────────────
+    // ── Detach from group while fully valid ───────────────────────────────
+    if (Group* group = bot->GetGroup())
+        group->RemoveMember(bot->GetGUID());
+
+    // ── Save while still on map ───────────────────────────────────────────
+    bot->SaveToDB(false, true);
+    CharacterDatabase.Execute("UPDATE characters SET online = 0 WHERE guid = {}",
+                              guidLow);
+
+    // ── Disconnect session from player FIRST ──────────────────────────────
+    // Prevents any script hooks from accessing the session→player link
+    // during the removal process.
+    botSession->SetPlayer(nullptr);
+
+    // ── Remove from map + world (mirrors RemovePlayerFromMap internals) ───
+    // We do this manually instead of calling CleanupsBeforeDelete followed
+    // by RemovePlayerFromMap — the combination of the two caused crashes
+    // because CleanupsBeforeDelete calls RemoveFromWorld (clearing InWorld
+    // flag) and then RemovePlayerFromMap calls it again, plus fires hooks
+    // on a half-cleaned-up player.
     bot->InterruptNonMeleeSpells(true);
     bot->AttackStop();
     bot->CombatStop();
@@ -216,28 +234,21 @@ static void DismissOneBot(BotInfo& entry)
     bot->ClearComboPoints();
     bot->ClearComboPointHolders();
     bot->GetThreatMgr().ClearAllThreat();
-    bot->getHostileRefMgr().deleteReferences();
+    bot->getHostileRefMgr().deleteReferences(true);
 
-    // ── Phase 2: remove from group ────────────────────────────────────────
-    if (Group* group = bot->GetGroup())
-        group->RemoveMember(bot->GetGUID());
+    // Remove from the map grid (this also sends SMSG_DESTROY_OBJECT
+    // to nearby players and removes from visibility lists)
+    if (bot->FindMap())
+    {
+        bot->RemoveFromWorld();
+        if (bot->IsInGrid())
+            bot->RemoveFromGrid();
+    }
 
-    // ── Phase 3: save while still on map ──────────────────────────────────
-    bot->SaveToDB(false, true);
-    CharacterDatabase.Execute("UPDATE characters SET online = 0 WHERE guid = {}", guidLow);
-
-    // ── Phase 4: remove from world ────────────────────────────────────────
-    // Must call RemovePlayerFromMap (removes from grid + sends destroy to
-    // nearby clients) then RemoveObject (clears global GUID lookup).
-    // Do NOT use CleanupsBeforeDelete — it only calls RemoveFromWorld which
-    // clears the InWorld flag but leaves the player in the grid, causing a
-    // segfault when the destructor hits stale grid references.
-    if (bot->FindMap() && bot->IsInWorld())
-        bot->GetMap()->RemovePlayerFromMap(bot, false);
-
+    // Remove from global GUID lookup
     ObjectAccessor::RemoveObject(bot);
 
-    // ── Phase 5: delete ───────────────────────────────────────────────────
+    // ── Delete ────────────────────────────────────────────────────────────
     delete bot;
     delete botSession;
 
