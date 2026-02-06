@@ -203,31 +203,30 @@ static void DismissOneBot(BotInfo& entry)
 
     LOG_INFO("module", "RPGBots: Dismissing bot {}", bot->GetName());
 
-    // Stop movement
+    // Grab identifiers before any cleanup
+    ObjectGuid::LowType guidLow = bot->GetGUID().GetCounter();
+
+    // Stop movement & combat first
     bot->GetMotionMaster()->Clear();
     bot->AttackStop();
+    bot->CombatStop();
 
-    // Remove from group
+    // Remove from group before world removal
     if (Group* group = bot->GetGroup())
         group->RemoveMember(bot->GetGUID());
 
-    // Remove from map
-    if (bot->FindMap() && bot->IsInWorld())
-    {
-        bot->GetMap()->RemovePlayerFromMap(bot, false);
-    }
-
-    // Remove from global lookups
-    ObjectAccessor::RemoveObject(bot);
-
-    // Save character state
+    // Save character state while still in world
     bot->SaveToDB(false, true);
 
     // Mark offline in DB
-    CharacterDatabase.Execute("UPDATE characters SET online = 0 WHERE guid = {}", bot->GetGUID().GetCounter());
+    CharacterDatabase.Execute("UPDATE characters SET online = 0 WHERE guid = {}", guidLow);
 
-    // Cleanup and delete
+    // CleanupsBeforeDelete handles RemoveFromWorld + ObjectAccessor internally
+    // Do NOT call RemovePlayerFromMap / ObjectAccessor::RemoveObject manually —
+    // doing so leaves the Player half-removed and causes a segfault when
+    // CleanupsBeforeDelete tries to finish the job.
     bot->CleanupsBeforeDelete();
+
     delete bot;
     delete botSession;
 
