@@ -1,10 +1,12 @@
 // RotationEngine.h
-// Flat rotation system: one SQL row per spec, 20 spell-ID columns.
+// Flat rotation system: one SQL row per spec, 30 spell-ID columns.
 //
 // Table: rpgbots.bot_rotations
 //   ability_1..5   — core rotation spells
 //   buff_1..5      — self-buffs (cast if aura missing)
 //   defensive_1..5 — emergency (cast when HP < 35%)
+//   dot_1..5       — DoTs (cast on enemy if aura missing on target)
+//   hot_1..5       — HoTs (cast on lowest-HP ally if aura missing)
 //   mobility_1..5  — gap closers (cast when out of range)
 //
 // The AI is role-aware:
@@ -13,6 +15,8 @@
 //   tank    → abilities target master's enemy
 //   buffs   → always self
 //   defens. → always self, only when low HP
+//   dots    → enemy, if aura missing on target
+//   hots    → lowest-HP ally, if aura missing
 //   mobil.  → always self, only when out of range
 
 #pragma once
@@ -23,7 +27,7 @@
 #include <unordered_map>
 
 // ─── Flat Spec Row ─────────────────────────────────────────────────────────────
-// Mirrors the SQL table exactly.  5 spells per bucket, 4 buckets = 20 spells.
+// Mirrors the SQL table exactly.  5 spells per bucket, 6 buckets = 30 spells.
 
 static constexpr uint8 SPELLS_PER_BUCKET = 5;
 
@@ -38,6 +42,8 @@ struct SpecRotation
     std::array<uint32, SPELLS_PER_BUCKET> abilities  = {};  // core rotation
     std::array<uint32, SPELLS_PER_BUCKET> buffs      = {};  // self-buffs
     std::array<uint32, SPELLS_PER_BUCKET> defensives = {};  // emergency
+    std::array<uint32, SPELLS_PER_BUCKET> dots       = {};  // DoTs on enemy
+    std::array<uint32, SPELLS_PER_BUCKET> hots       = {};  // HoTs on ally
     std::array<uint32, SPELLS_PER_BUCKET> mobility   = {};  // gap closers
 };
 

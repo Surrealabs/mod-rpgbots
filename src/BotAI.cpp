@@ -178,6 +178,35 @@ static bool RunAbilities(Player* bot, Player* master, Unit* enemy,
     return false;
 }
 
+// DoTs: cast on ENEMY if the aura is missing on the target
+static bool RunDots(Player* bot, Unit* enemy,
+                    const std::array<uint32, SPELLS_PER_BUCKET>& spells)
+{
+    if (!enemy) return false;
+    for (uint32 id : spells)
+    {
+        if (id == 0) continue;
+        if (enemy->HasAura(id))  continue;               // already ticking
+        if (TryCast(bot, enemy, id)) return true;
+    }
+    return false;
+}
+
+// HoTs: cast on lowest-HP ally if the aura is missing
+static bool RunHots(Player* bot, Player* master,
+                    const std::array<uint32, SPELLS_PER_BUCKET>& spells)
+{
+    Player* target = FindLowestHP(bot, master);
+    if (!target) return false;
+    for (uint32 id : spells)
+    {
+        if (id == 0) continue;
+        if (target->HasAura(id))  continue;              // already ticking
+        if (TryCast(bot, target, id)) return true;
+    }
+    return false;
+}
+
 // Mobility: cast on SELF if we're out of preferred range of the enemy
 static bool RunMobility(Player* bot, Unit* enemy, float preferredRange,
                         const std::array<uint32, SPELLS_PER_BUCKET>& spells)
@@ -212,11 +241,19 @@ static void RunWaterfall(Player* bot, Player* master, Unit* enemy,
     if (RunDefensives(bot, rot->defensives))
         return;
 
-    // 3. Abilities — "What do I press?"
+    // 3. DoTs — "Are my DoTs ticking?"
+    if (RunDots(bot, enemy, rot->dots))
+        return;
+
+    // 4. HoTs — "Are my HoTs rolling?"
+    if (RunHots(bot, master, rot->hots))
+        return;
+
+    // 5. Abilities — "What do I press?"
     if (RunAbilities(bot, master, enemy, rot->role, rot->abilities))
         return;
 
-    // 4. Mobility — "Can I get in range?"
+    // 6. Mobility — "Can I get in range?"
     RunMobility(bot, enemy, rot->preferredRange, rot->mobility);
 }
 

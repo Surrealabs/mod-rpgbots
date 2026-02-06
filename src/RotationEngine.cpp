@@ -29,6 +29,8 @@ uint32 RotationEngine::LoadFromDB()
         "       ability_1, ability_2, ability_3, ability_4, ability_5, "
         "       buff_1, buff_2, buff_3, buff_4, buff_5, "
         "       defensive_1, defensive_2, defensive_3, defensive_4, defensive_5, "
+        "       dot_1, dot_2, dot_3, dot_4, dot_5, "
+        "       hot_1, hot_2, hot_3, hot_4, hot_5, "
         "       mobility_1, mobility_2, mobility_3, mobility_4, mobility_5 "
         "FROM rpgbots.bot_rotations");
 
@@ -60,9 +62,17 @@ uint32 RotationEngine::LoadFromDB()
         for (uint8 i = 0; i < SPELLS_PER_BUCKET; ++i)
             rot.defensives[i] = f[15 + i].Get<uint32>();
 
-        // 5 mobility   (columns 20-24)
+        // 5 dots       (columns 20-24)
         for (uint8 i = 0; i < SPELLS_PER_BUCKET; ++i)
-            rot.mobility[i] = f[20 + i].Get<uint32>();
+            rot.dots[i] = f[20 + i].Get<uint32>();
+
+        // 5 hots       (columns 25-29)
+        for (uint8 i = 0; i < SPELLS_PER_BUCKET; ++i)
+            rot.hots[i] = f[25 + i].Get<uint32>();
+
+        // 5 mobility   (columns 30-34)
+        for (uint8 i = 0; i < SPELLS_PER_BUCKET; ++i)
+            rot.mobility[i] = f[30 + i].Get<uint32>();
 
         SpecKey key = MakeSpecKey(rot.classId, rot.specIndex);
         _rotations[key] = std::move(rot);

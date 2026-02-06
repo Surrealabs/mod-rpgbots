@@ -1,14 +1,16 @@
 -- ============================================================================
--- RPGBots: Flat Rotation Table — one row per spec, 20 spell columns
+-- RPGBots: Flat Rotation Table — one row per spec, 30 spell columns
 -- ============================================================================
--- Dead simple.  Each spec gets ONE row with four buckets of 5 spells each.
+-- Dead simple.  Each spec gets ONE row with six buckets of 5 spells each.
 -- The C++ AI is role-aware: it knows who to target based on the role column.
 --
---   ability_1..5  — Core rotation.  Healer: cast on lowest-HP ally (<90%).
---                   DPS/Tank: cast on master's target (priority order).
---   buff_1..5     — Self-buffs.  Cast on self if the aura is missing.
+--   ability_1..5   — Core rotation.  Healer: cast on lowest-HP ally (<90%).
+--                    DPS/Tank: cast on master's target (priority order).
+--   buff_1..5      — Self-buffs.  Cast on self if the aura is missing.
 --   defensive_1..5 — Emergency.  Cast on self when HP drops below 35%.
---   mobility_1..5 — Positioning. Cast when out of preferred range.
+--   dot_1..5       — DoTs.  Cast on enemy if aura missing on target.
+--   hot_1..5       — HoTs.  Cast on lowest-HP ally if aura missing.
+--   mobility_1..5  — Positioning. Cast when out of preferred range.
 --
 -- To change a rotation: UPDATE one row, then `.rpg reload` in-game.
 -- To add a new class: INSERT one row per spec.  No recompile.
@@ -43,7 +45,21 @@ CREATE TABLE `rpgbots`.`bot_rotations` (
     `defensive_4`     MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
     `defensive_5`     MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
 
-    -- Bucket 4: Mobility (cast when out of range)
+    -- Bucket 4: DoTs (cast on enemy if aura missing on target)
+    `dot_1`           MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
+    `dot_2`           MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
+    `dot_3`           MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
+    `dot_4`           MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
+    `dot_5`           MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
+
+    -- Bucket 5: HoTs (cast on lowest-HP ally if aura missing)
+    `hot_1`           MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
+    `hot_2`           MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
+    `hot_3`           MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
+    `hot_4`           MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
+    `hot_5`           MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
+
+    -- Bucket 6: Mobility (cast when out of range)
     `mobility_1`      MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
     `mobility_2`      MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
     `mobility_3`      MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
@@ -51,7 +67,7 @@ CREATE TABLE `rpgbots`.`bot_rotations` (
     `mobility_5`      MEDIUMINT UNSIGNED NOT NULL DEFAULT 0,
 
     PRIMARY KEY (`class_id`, `spec_index`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='One row per spec — 20 spells, 4 buckets';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='One row per spec — 30 spells, 6 buckets';
 
 -- INSERT rows here per class/spec.  Example:
 -- INSERT INTO `rpgbots`.`bot_rotations` VALUES

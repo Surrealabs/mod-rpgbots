@@ -152,6 +152,8 @@ public:
         showSlots("Abilities",  rot->abilities);
         showSlots("Buffs",      rot->buffs);
         showSlots("Defensives", rot->defensives);
+        showSlots("DoTs",       rot->dots);
+        showSlots("HoTs",       rot->hots);
         showSlots("Mobility",   rot->mobility);
 
         return true;
