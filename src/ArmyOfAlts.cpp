@@ -348,7 +348,7 @@ static void FinishBotSpawn(ObjectGuid masterGuid, WorldSession* botSession, Obje
 
     // Register with BotManager
     ObjectGuid::LowType masterLow = master->GetGUID().GetCounter();
-    sBotMgr.AddBot(masterLow, { bot, botSession, role, specIdx, false, false });
+    sBotMgr.AddBot(masterLow, { bot, botSession, role, specIdx, false, false, 0, ObjectGuid::Empty });
 
     // ── Start following master ──
     bot->GetMotionMaster()->MoveFollow(master, 4.0f, float(M_PI));
@@ -373,9 +373,14 @@ public:
 
     ChatCommandTable GetCommands() const override
     {
+        static ChatCommandTable spawnSubTable =
+        {
+            { "all",  HandleArmySpawnAllCommand, SEC_GAMEMASTER, Console::No },
+        };
         static ChatCommandTable armyTable =
         {
             { "spawn",   HandleArmySpawnCommand,   SEC_GAMEMASTER, Console::No },
+            { "spawnal", spawnSubTable },
             { "list",    HandleArmyListCommand,    SEC_GAMEMASTER, Console::No },
             { "dismiss", HandleArmyDismissCommand, SEC_GAMEMASTER, Console::No },
             { "role",    HandleArmyRoleCommand,    SEC_GAMEMASTER, Console::No },
@@ -505,6 +510,68 @@ public:
         handler->PSendSysMessage("|cff00ff00Spawning {}... They will join your party shortly.|r", altName);
         LOG_INFO("module", "RPGBots: {} spawning alt {} (GUID: {})",
             master->GetName(), altName, altGuidLow);
+
+        return true;
+    }
+
+    // .army spawn all — spawn every alt on this account
+    static bool HandleArmySpawnAllCommand(ChatHandler* handler)
+    {
+        Player* master = handler->GetSession()->GetPlayer();
+        if (!master)
+            return false;
+
+        uint32 accountId = master->GetSession()->GetAccountId();
+        ObjectGuid::LowType masterGuidLow = master->GetGUID().GetCounter();
+
+        QueryResult result = CharacterDatabase.Query(
+            "SELECT guid, name FROM characters WHERE account = {} AND guid != {}",
+            accountId, masterGuidLow);
+
+        if (!result)
+        {
+            handler->PSendSysMessage("|cffff0000No alts found on this account.|r");
+            return true;
+        }
+
+        uint32 spawned = 0;
+        do {
+            Field* fields = result->Fetch();
+            uint32 altGuidLow = fields[0].Get<uint32>();
+            std::string altName = fields[1].Get<std::string>();
+            ObjectGuid altGuid = ObjectGuid::Create<HighGuid::Player>(altGuidLow);
+
+            // Skip if already in the world
+            if (ObjectAccessor::FindPlayer(altGuid))
+                continue;
+
+            WorldSession* botSession = new WorldSession(
+                accountId, std::string(altName), 0, nullptr,
+                SEC_PLAYER, EXPANSION_WRATH_OF_THE_LICH_KING,
+                0, LOCALE_enUS, 0, false, true, 0);
+
+            auto queryHolder = std::make_shared<BotLoginQueryHolder>(accountId, altGuid);
+            if (!queryHolder->Initialize())
+            {
+                delete botSession;
+                continue;
+            }
+
+            ObjectGuid masterGuid = master->GetGUID();
+            master->GetSession()->AddQueryHolderCallback(
+                CharacterDatabase.DelayQueryHolder(queryHolder)
+            ).AfterComplete([masterGuid, botSession, altGuid](SQLQueryHolderBase const& holder)
+            {
+                FinishBotSpawn(masterGuid, botSession, altGuid,
+                               static_cast<CharacterDatabaseQueryHolder const&>(holder));
+            });
+            ++spawned;
+        } while (result->NextRow());
+
+        if (spawned > 0)
+            handler->PSendSysMessage("|cff00ff00Spawning {} alt(s)... They will join your party shortly.|r", spawned);
+        else
+            handler->PSendSysMessage("|cffff0000All alts are already in the world.|r");
 
         return true;
     }

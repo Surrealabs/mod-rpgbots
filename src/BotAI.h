@@ -18,6 +18,10 @@ struct BotInfo
     uint8         specIndex;   // Which spec from the class profile (0, 1, 2)
     bool          isFollowing; // Currently in follow mode
     bool          isInCombat;  // Currently fighting
+
+    // Spell queue: when casting/channeling, the next spell to cast is queued
+    uint32        queuedSpellId  = 0;
+    ObjectGuid    queuedTargetGuid;
 };
 
 // ─── Bot Manager Singleton ─────────────────────────────────────────────────────

@@ -1,15 +1,15 @@
 // BotAI.cpp
-// Dead-simple priority-queue AI.  One SQL row per spec, 20 spells, 4 buckets.
+// Dead-simple priority-queue AI.  One SQL row per spec, 30 spells, 6 buckets.
 //
-// The waterfall every tick:
+// The waterfall every tick (combat only):
 //   1. BUFFS       — cast on self if aura missing
 //   2. DEFENSIVES  — cast on self if HP < 35%
-//   3. ABILITIES   — role decides the target:
-//                      healer  → lowest-HP ally under 90%
-//                      dps     → master's enemy target
-//                      tank    → master's enemy target
-//   4. MOBILITY    — cast on self if out of preferred range
+//   3. DOTS        — cast on enemy if aura missing on target
+//   4. HOTS        — cast on lowest-HP ally if aura missing
+//   5. ABILITIES   — role decides the target
+//   6. MOBILITY    — cast on self if out of preferred range
 //
+// Out of combat: arrow formation behind master.
 // One cast per tick.  First valid spell wins.  No branching spaghetti.
 
 #include "BotAI.h"
@@ -23,17 +23,25 @@
 #include "Log.h"
 #include "Chat.h"
 #include "SpellAuras.h"
+#include "Spell.h"
+#include "SpellInfo.h"
 #include <cmath>
+#include <algorithm>
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 static constexpr uint32 AI_UPDATE_INTERVAL_MS = 1000;
-static constexpr float  FOLLOW_DISTANCE       = 4.0f;
-static constexpr float  FOLLOW_ANGLE          = float(M_PI);
 static constexpr float  MAX_FOLLOW_DISTANCE   = 40.0f;
-static constexpr float  COMBAT_CHASE_MELEE    = 5.0f;
+static constexpr float  COMBAT_CHASE_MELEE    = 2.0f;
 static constexpr float  COMBAT_CHASE_RANGED   = 25.0f;
 static constexpr float  HEAL_THRESHOLD_PCT    = 90.0f;
 static constexpr float  DEFENSIVE_HP_PCT      = 35.0f;
+
+// Warlock spell IDs
+static constexpr uint32 WARLOCK_SOULBURN      = 17877;  // Shadowburn (Destro talent, costs shard)
+static constexpr uint32 SOUL_SHARD_ITEM       = 6265;   // Soul Shard item ID
+
+// Warlock talent tree IDs (for spec checks)
+static constexpr uint32 TALENT_TREE_DESTRUCTION = 301;
 
 // ─── Role Auto-Detection ───────────────────────────────────────────────────────
 
@@ -106,15 +114,36 @@ static Player* FindLowestHP(Player* bot, Player* master)
     return lowest;
 }
 
-// ─── Try to cast one spell ─────────────────────────────────────────────────────
-// Returns true if the spell was successfully cast.
+// ─── Spell eligibility check (no cast — dry run) ──────────────────────────────
+// Returns true if the spell COULD be cast right now (has spell, not on CD, etc.)
 
-static bool TryCast(Player* bot, Unit* target, uint32 spellId)
+static bool CanCast(Player* bot, Unit* target, uint32 spellId)
 {
     if (spellId == 0)          return false;
     if (!target)               return false;
     if (!bot->HasSpell(spellId))       return false;
     if (bot->HasSpellCooldown(spellId)) return false;
+
+    // Warlock Soulburn (Shadowburn): only if Destruction AND has a Soul Shard
+    if (spellId == WARLOCK_SOULBURN)
+    {
+        uint32 spec = bot->GetSpec(bot->GetActiveSpec());
+        if (spec != TALENT_TREE_DESTRUCTION)
+            return false;
+        if (bot->GetItemCount(SOUL_SHARD_ITEM) == 0)
+            return false;
+    }
+
+    return true;
+}
+
+// ─── Try to cast one spell ─────────────────────────────────────────────────────
+// Returns true if the spell was successfully cast.
+
+static bool TryCast(Player* bot, Unit* target, uint32 spellId)
+{
+    if (!CanCast(bot, target, spellId))
+        return false;
 
     return bot->CastSpell(target, spellId, false) == SPELL_CAST_OK;
 }
@@ -237,14 +266,175 @@ static bool RunMobility(Player* bot, Unit* enemy, float preferredRange,
     return false;
 }
 
+// ─── Spell Queue Scanner ───────────────────────────────────────────────────────
+// Scans the waterfall WITHOUT casting.  Returns the first eligible (spell, target)
+// pair that would fire if the bot were free to cast right now.
+
+static bool ScanWaterfall(Player* bot, Player* master, Unit* enemy,
+                          const SpecRotation* rot,
+                          uint32& outSpellId, ObjectGuid& outTargetGuid)
+{
+    // 1. Buffs
+    for (uint32 id : rot->buffs)
+    {
+        if (id == 0) continue;
+        if (bot->HasAura(id)) continue;
+        if (id == WARLOCK_METAMORPHOSIS)
+        {
+            if (bot->GetPower(POWER_MANA) * 100 / std::max(bot->GetMaxPower(POWER_MANA), 1u) < META_MANA_THRESHOLD)
+                continue;
+        }
+        if (CanCast(bot, bot, id))
+        {
+            outSpellId = id;
+            outTargetGuid = bot->GetGUID();
+            return true;
+        }
+    }
+
+    // 2. Defensives
+    if (bot->GetHealthPct() < DEFENSIVE_HP_PCT)
+    {
+        for (uint32 id : rot->defensives)
+        {
+            if (id == 0) continue;
+            if (CanCast(bot, bot, id))
+            {
+                outSpellId = id;
+                outTargetGuid = bot->GetGUID();
+                return true;
+            }
+        }
+    }
+
+    // 3. DoTs
+    if (enemy)
+    {
+        for (uint32 id : rot->dots)
+        {
+            if (id == 0) continue;
+            if (enemy->HasAura(id)) continue;
+            if (CanCast(bot, enemy, id))
+            {
+                outSpellId = id;
+                outTargetGuid = enemy->GetGUID();
+                return true;
+            }
+        }
+    }
+
+    // 4. HoTs
+    {
+        Player* hotTarget = FindLowestHP(bot, master);
+        if (hotTarget)
+        {
+            for (uint32 id : rot->hots)
+            {
+                if (id == 0) continue;
+                if (hotTarget->HasAura(id)) continue;
+                if (CanCast(bot, hotTarget, id))
+                {
+                    outSpellId = id;
+                    outTargetGuid = hotTarget->GetGUID();
+                    return true;
+                }
+            }
+        }
+    }
+
+    // 5. Abilities
+    if (rot->role == BotRole::ROLE_HEALER)
+    {
+        Player* healTarget = FindLowestHP(bot, master);
+        if (healTarget && healTarget->GetHealthPct() < HEAL_THRESHOLD_PCT)
+        {
+            for (uint32 id : rot->abilities)
+            {
+                if (id == 0) continue;
+                if (CanCast(bot, healTarget, id))
+                {
+                    outSpellId = id;
+                    outTargetGuid = healTarget->GetGUID();
+                    return true;
+                }
+            }
+        }
+    }
+    else if (enemy)
+    {
+        for (uint32 id : rot->abilities)
+        {
+            if (id == 0) continue;
+            if (CanCast(bot, enemy, id))
+            {
+                outSpellId = id;
+                outTargetGuid = enemy->GetGUID();
+                return true;
+            }
+        }
+    }
+
+    // 6. Mobility
+    if (enemy)
+    {
+        float dist = Dist2D(bot, enemy);
+        if (dist > rot->preferredRange + 5.f)
+        {
+            for (uint32 id : rot->mobility)
+            {
+                if (id == 0) continue;
+                if (CanCast(bot, bot, id))
+                {
+                    outSpellId = id;
+                    outTargetGuid = bot->GetGUID();
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
 // ─── The Waterfall ─────────────────────────────────────────────────────────────
-// One cast per tick.  Buffs → Defensives → Abilities → Mobility.
+// One cast per tick.  Never interrupts a cast or channel.
+// While casting: scans the waterfall dry and queues the next spell.
+// When free: consumes the queue first, then falls through to normal waterfall.
 
 static void RunWaterfall(Player* bot, Player* master, Unit* enemy,
-                         const SpecRotation* rot)
+                         const SpecRotation* rot, BotInfo& info)
 {
+    // ── Currently casting or channeling — queue next spell, don't interrupt ──
     if (bot->HasUnitState(UNIT_STATE_CASTING))
+    {
+        uint32 qSpell = 0;
+        ObjectGuid qTarget;
+        if (ScanWaterfall(bot, master, enemy, rot, qSpell, qTarget))
+        {
+            info.queuedSpellId    = qSpell;
+            info.queuedTargetGuid = qTarget;
+        }
         return;
+    }
+
+    // ── Free to cast — try queued spell first ──────────────────────────────
+    if (info.queuedSpellId != 0)
+    {
+        uint32 qSpell = info.queuedSpellId;
+        ObjectGuid qTarget = info.queuedTargetGuid;
+        info.queuedSpellId = 0;
+        info.queuedTargetGuid = ObjectGuid::Empty;
+
+        Unit* target = ObjectAccessor::GetUnit(*bot, qTarget);
+        if (target && target->IsAlive() && target->IsInWorld())
+        {
+            if (TryCast(bot, target, qSpell))
+                return;
+        }
+        // Queue expired or invalid — fall through to normal waterfall
+    }
+
+    // ── Normal waterfall ───────────────────────────────────────────────────
 
     // 1. Buffs — "Is my tax paid?"
     if (RunBuffs(bot, rot->buffs))
@@ -268,6 +458,88 @@ static void RunWaterfall(Player* bot, Player* master, Unit* enemy,
 
     // 6. Mobility — "Can I get in range?"
     RunMobility(bot, enemy, rot->preferredRange, rot->mobility);
+}
+
+// ─── Arrow Formation ───────────────────────────────────────────────────────────
+// Out-of-combat formation: an arrowhead behind the master.
+//   Row 0 (tip): Tank(s) — directly behind master
+//   Row 1 (middle): Master/Player position (implicit, not placed)
+//   Row 2 (wings): Ranged DPS / Healers spread on left and right wings
+// Melee DPS sit between the tank tip and the ranged wings.
+//
+// Positions are relative to the master's orientation (facing direction).
+// "Behind" = opposite of where the master faces.
+
+static void ArrangeArrowFormation(Player* master, std::vector<BotInfo>& bots)
+{
+    if (bots.empty()) return;
+
+    float masterX = master->GetPositionX();
+    float masterY = master->GetPositionY();
+    float masterZ = master->GetPositionZ();
+    float facing  = master->GetOrientation();
+
+    // "Behind" direction = facing + PI
+    float behind = facing + float(M_PI);
+
+    // Sort bots into role buckets
+    std::vector<BotInfo*> tanks, melee, ranged, healers;
+    for (auto& info : bots)
+    {
+        if (!info.player || !info.player->IsAlive() || !info.player->IsInWorld())
+            continue;
+        if (info.player->GetMapId() != master->GetMapId())
+            continue;
+
+        switch (info.role)
+        {
+            case BotRole::ROLE_TANK:       tanks.push_back(&info);   break;
+            case BotRole::ROLE_MELEE_DPS:  melee.push_back(&info);   break;
+            case BotRole::ROLE_RANGED_DPS: ranged.push_back(&info);  break;
+            case BotRole::ROLE_HEALER:     healers.push_back(&info);  break;
+        }
+    }
+
+    // Combine ranged + healers for the back wings
+    std::vector<BotInfo*> wings;
+    wings.insert(wings.end(), ranged.begin(), ranged.end());
+    wings.insert(wings.end(), healers.begin(), healers.end());
+
+    // Row distances behind master
+    float tankDist  = 3.0f;   // tanks close behind master (tip of arrow)
+    float meleeDist = 5.0f;   // melee behind tanks
+    float wingDist  = 7.0f;   // ranged/healers at the back wings
+    float spread    = 0.35f;  // radians between bots in same row (~20 degrees)
+
+    auto placeRow = [&](std::vector<BotInfo*>& row, float dist)
+    {
+        int n = (int)row.size();
+        if (n == 0) return;
+        float startAngle = behind - (float(n - 1) * spread * 0.5f);
+        for (int i = 0; i < n; ++i)
+        {
+            float angle = startAngle + float(i) * spread;
+            float x = masterX + dist * std::cos(angle);
+            float y = masterY + dist * std::sin(angle);
+
+            Player* bot = row[i]->player;
+
+            // Only reposition if significantly out of place (> 3 yards from slot)
+            float dx = bot->GetPositionX() - x;
+            float dy = bot->GetPositionY() - y;
+            float slotDist = std::sqrt(dx * dx + dy * dy);
+            if (slotDist > 3.0f)
+            {
+                row[i]->isFollowing = false;
+                bot->GetMotionMaster()->Clear();
+                bot->GetMotionMaster()->MovePoint(0, x, y, masterZ);
+            }
+        }
+    };
+
+    placeRow(tanks, tankDist);
+    placeRow(melee, meleeDist);
+    placeRow(wings, wingDist);
 }
 
 // ─── Per-Bot Update ────────────────────────────────────────────────────────────
@@ -296,11 +568,18 @@ static void UpdateBotAI(BotInfo& info, Player* master)
             info.isInCombat  = true;
             info.isFollowing = false;
 
-            bool melee = (info.role == BotRole::ROLE_MELEE_DPS ||
-                          info.role == BotRole::ROLE_TANK);
-            bot->Attack(enemy, melee);
+            bool isMelee = (info.role == BotRole::ROLE_MELEE_DPS ||
+                            info.role == BotRole::ROLE_TANK);
+            bot->Attack(enemy, isMelee);
 
-            float chase = melee ? COMBAT_CHASE_MELEE : COMBAT_CHASE_RANGED;
+            // Melee: chase into melee range; Ranged: stay at 25 yards
+            float chase;
+            if (isMelee)
+                chase = COMBAT_CHASE_MELEE;
+            else
+                chase = COMBAT_CHASE_RANGED;
+
+            // Override with rotation's preferred range if set
             if (rot && rot->preferredRange > 0)
                 chase = rot->preferredRange;
 
@@ -310,7 +589,7 @@ static void UpdateBotAI(BotInfo& info, Player* master)
 
         // Run the waterfall
         if (rot)
-            RunWaterfall(bot, master, enemy, rot);
+            RunWaterfall(bot, master, enemy, rot, info);
 
         return;
     }
@@ -326,22 +605,16 @@ static void UpdateBotAI(BotInfo& info, Player* master)
         bot->GetMotionMaster()->Clear();
     }
 
-    // ── Follow master ──────────────────────────────────────────────────────
+    // ── Teleport if too far ────────────────────────────────────────────────
     float dist = Dist2D(bot, master);
 
     if (dist > MAX_FOLLOW_DISTANCE || bot->GetMapId() != master->GetMapId())
     {
         TeleportToMaster(bot, master);
         info.isFollowing = false;
-        return;
     }
 
-    if (!info.isFollowing)
-    {
-        info.isFollowing = true;
-        bot->GetMotionMaster()->Clear();
-        bot->GetMotionMaster()->MoveFollow(master, FOLLOW_DISTANCE, FOLLOW_ANGLE);
-    }
+    // Formation positioning is handled per-group in the world script tick
 }
 
 // ─── World Script: tick loop ───────────────────────────────────────────────────
@@ -365,8 +638,13 @@ public:
             Player* master = ObjectAccessor::FindPlayer(mg);
             if (!master || !master->IsInWorld()) continue;
 
+            // Per-bot AI updates (combat rotation, targeting)
             for (auto& info : bots)
                 UpdateBotAI(info, master);
+
+            // Out-of-combat: arrange arrow formation
+            if (!master->IsInCombat())
+                ArrangeArrowFormation(master, bots);
         }
     }
 
