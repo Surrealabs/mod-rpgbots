@@ -121,6 +121,10 @@ static bool TryCast(Player* bot, Unit* target, uint32 spellId)
 // ─── Bucket Runners ────────────────────────────────────────────────────────────
 // Each bucket scans its 5 slots. First valid cast wins → return true.
 
+// Warlock Metamorphosis spell ID (Demonology buff_1)
+static constexpr uint32 WARLOCK_METAMORPHOSIS = 47241;
+static constexpr float  META_MANA_THRESHOLD   = 80.0f;
+
 // Buffs: cast on SELF if the aura is missing
 static bool RunBuffs(Player* bot, const std::array<uint32, SPELLS_PER_BUCKET>& spells)
 {
@@ -128,6 +132,14 @@ static bool RunBuffs(Player* bot, const std::array<uint32, SPELLS_PER_BUCKET>& s
     {
         if (id == 0) continue;
         if (bot->HasAura(id))  continue;                 // already have it
+
+        // Warlock Metamorphosis: only pop Meta when mana > 80%
+        if (id == WARLOCK_METAMORPHOSIS)
+        {
+            if (bot->GetPower(POWER_MANA) * 100 / std::max(bot->GetMaxPower(POWER_MANA), 1u) < META_MANA_THRESHOLD)
+                continue;
+        }
+
         if (TryCast(bot, bot, id)) return true;
     }
     return false;

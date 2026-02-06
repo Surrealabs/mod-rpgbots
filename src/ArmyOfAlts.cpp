@@ -206,27 +206,38 @@ static void DismissOneBot(BotInfo& entry)
     // Grab identifiers before any cleanup
     ObjectGuid::LowType guidLow = bot->GetGUID().GetCounter();
 
-    // Stop movement & combat first
-    bot->GetMotionMaster()->Clear();
+    // ── Phase 1: stop all activity while still fully valid ─────────────────
+    bot->InterruptNonMeleeSpells(true);
     bot->AttackStop();
     bot->CombatStop();
+    bot->GetMotionMaster()->Clear(false);
+    bot->RemoveAllAuras();
+    bot->RemoveAllGameObjects();
+    bot->ClearComboPoints();
+    bot->ClearComboPointHolders();
+    bot->GetThreatMgr().ClearAllThreat();
+    bot->getHostileRefMgr().deleteReferences();
 
-    // Remove from group before world removal
+    // ── Phase 2: remove from group ────────────────────────────────────────
     if (Group* group = bot->GetGroup())
         group->RemoveMember(bot->GetGUID());
 
-    // Save character state while still in world
+    // ── Phase 3: save while still on map ──────────────────────────────────
     bot->SaveToDB(false, true);
-
-    // Mark offline in DB
     CharacterDatabase.Execute("UPDATE characters SET online = 0 WHERE guid = {}", guidLow);
 
-    // CleanupsBeforeDelete handles RemoveFromWorld + ObjectAccessor internally
-    // Do NOT call RemovePlayerFromMap / ObjectAccessor::RemoveObject manually —
-    // doing so leaves the Player half-removed and causes a segfault when
-    // CleanupsBeforeDelete tries to finish the job.
-    bot->CleanupsBeforeDelete();
+    // ── Phase 4: remove from world ────────────────────────────────────────
+    // Must call RemovePlayerFromMap (removes from grid + sends destroy to
+    // nearby clients) then RemoveObject (clears global GUID lookup).
+    // Do NOT use CleanupsBeforeDelete — it only calls RemoveFromWorld which
+    // clears the InWorld flag but leaves the player in the grid, causing a
+    // segfault when the destructor hits stale grid references.
+    if (bot->FindMap() && bot->IsInWorld())
+        bot->GetMap()->RemovePlayerFromMap(bot, false);
 
+    ObjectAccessor::RemoveObject(bot);
+
+    // ── Phase 5: delete ───────────────────────────────────────────────────
     delete bot;
     delete botSession;
 
