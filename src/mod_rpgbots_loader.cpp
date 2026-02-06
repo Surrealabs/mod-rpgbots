@@ -4,7 +4,21 @@
 
 void Addmod_rpgbots_PersonalitySystem();
 
-void Addmod_rpgbotsLloader()
+void AddRPGbotsCommands();
+
+void AddCustomPsychology();
+void AddCustomTemperament();
+
+void AddBotSessionSystem();
+
+void AddArmyOfAlts();
+
+void Addmod_rpgbotsScripts()
 {
     Addmod_rpgbots_PersonalitySystem();
+    AddRPGbotsCommands();
+    AddCustomPsychology();
+    AddCustomTemperament();
+    AddBotSessionSystem();
+    AddArmyOfAlts();
 }

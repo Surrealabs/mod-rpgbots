@@ -12,9 +12,9 @@ class PersonalitySystem : public PlayerScript
 public:
     PersonalitySystem();
 
-    void OnLogin(Player* player) override;
-    void OnGiveXP(Player* player, uint32& xp, uint8 /*restType*/) override;
-    // Add more hooks as needed for affix/temperament/psychology management
+    void OnPlayerLogin(Player* player) override;
+    void OnPlayerLogout(Player* player) override;
+    void OnPlayerGiveXP(Player* player, uint32& amount, Unit* victim, uint8 xpSource) override;
 };
 
 #endif // MODULE_RPG_BOTS_PERSONALITY_SYSTEM_H
