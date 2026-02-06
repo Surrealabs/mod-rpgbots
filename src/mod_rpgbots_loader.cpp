@@ -13,9 +13,6 @@ void AddBotSessionSystem();
 
 void AddArmyOfAlts();
 
-void AddBotPaladin();
-void AddBotWarlock();
-
 void AddRotationEngine();
 void AddBotAI();
 
@@ -23,10 +20,6 @@ void Addmod_rpgbotsScripts()
 {
     // Rotation Engine — loads SQL rotation data at startup (must be first)
     AddRotationEngine();
-
-    // Class behavior profiles (legacy — kept for fallback metadata)
-    AddBotPaladin();
-    AddBotWarlock();
 
     Addmod_rpgbots_PersonalitySystem();
     AddRPGbotsCommands();
