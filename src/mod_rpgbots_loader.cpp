@@ -16,9 +16,15 @@ void AddArmyOfAlts();
 void AddBotPaladin();
 void AddBotWarlock();
 
+void AddRotationEngine();
+void AddBotAI();
+
 void Addmod_rpgbotsScripts()
 {
-    // Class behavior profiles (register first so they're available to other systems)
+    // Rotation Engine — loads SQL rotation data at startup (must be first)
+    AddRotationEngine();
+
+    // Class behavior profiles (legacy — kept for fallback metadata)
     AddBotPaladin();
     AddBotWarlock();
 
@@ -28,4 +34,7 @@ void Addmod_rpgbotsScripts()
     AddCustomTemperament();
     AddBotSessionSystem();
     AddArmyOfAlts();
+
+    // Bot AI — follow, assist, combat (must be after ArmyOfAlts)
+    AddBotAI();
 }

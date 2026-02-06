@@ -1,5 +1,5 @@
 // ArmyOfAlts.cpp
-// Spawns alt characters into the world as bots, adds to party
+// Spawns alt characters into the world as bots, adds to party, follows master
 
 #include "Chat.h"
 #include "CommandScript.h"
@@ -20,8 +20,8 @@
 #include "Random.h"
 #include "MotionMaster.h"
 #include "SocialMgr.h"
-#include <unordered_map>
-#include <vector>
+#include "BotAI.h"
+#include "BotBehavior.h"
 #include <cmath>
 
 using namespace Acore::ChatCommands;
@@ -192,17 +192,8 @@ public:
     }
 };
 
-// ─── Bot Tracking ──────────────────────────────────────────────────────────────
-struct BotEntry
-{
-    Player* player;
-    WorldSession* session;
-};
-
-static std::unordered_map<ObjectGuid::LowType, std::vector<BotEntry>> s_activeBots;
-
 // ─── Dismiss a single bot ──────────────────────────────────────────────────────
-static void DismissOneBot(BotEntry& entry)
+static void DismissOneBot(BotInfo& entry)
 {
     Player* bot = entry.player;
     WorldSession* botSession = entry.session;
@@ -211,6 +202,10 @@ static void DismissOneBot(BotEntry& entry)
         return;
 
     LOG_INFO("module", "RPGBots: Dismissing bot {}", bot->GetName());
+
+    // Stop movement
+    bot->GetMotionMaster()->Clear();
+    bot->AttackStop();
 
     // Remove from group
     if (Group* group = bot->GetGroup())
@@ -229,9 +224,6 @@ static void DismissOneBot(BotEntry& entry)
     bot->SaveToDB(false, true);
 
     // Mark offline in DB
-    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CHAR_ONLINE);
-    stmt->SetData(0, bot->GetGUID().GetCounter());
-    // Actually need to mark offline — use a direct query
     CharacterDatabase.Execute("UPDATE characters SET online = 0 WHERE guid = {}", bot->GetGUID().GetCounter());
 
     // Cleanup and delete
@@ -246,14 +238,9 @@ static void DismissOneBot(BotEntry& entry)
 // ─── Dismiss all bots for a master ────────────────────────────────────────────
 static void DismissAllBots(ObjectGuid::LowType masterGuidLow)
 {
-    auto it = s_activeBots.find(masterGuidLow);
-    if (it == s_activeBots.end())
-        return;
-
-    for (auto& entry : it->second)
+    auto bots = sBotMgr.RemoveAllBots(masterGuidLow);
+    for (auto& entry : bots)
         DismissOneBot(entry);
-
-    s_activeBots.erase(it);
 }
 
 // ─── Bot spawn callback (runs after DB queries complete) ───────────────────────
@@ -334,13 +321,27 @@ static void FinishBotSpawn(ObjectGuid masterGuid, WorldSession* botSession, Obje
     }
     group->AddMember(bot);
 
-    // Track this bot
+    // ── Detect role and spec ──
+    BotRole role = DetectBotRole(bot);
+    uint8 specIdx = DetectSpecIndex(bot);
+
+    // Register with BotManager
     ObjectGuid::LowType masterLow = master->GetGUID().GetCounter();
-    s_activeBots[masterLow].push_back({ bot, botSession });
+    sBotMgr.AddBot(masterLow, { bot, botSession, role, specIdx, false, false });
+
+    // ── Start following master ──
+    bot->GetMotionMaster()->MoveFollow(master, 4.0f, float(M_PI));
+
+    // Role name for display
+    const char* roleName = "DPS";
+    if (role == BotRole::ROLE_TANK) roleName = "Tank";
+    else if (role == BotRole::ROLE_HEALER) roleName = "Healer";
+    else if (role == BotRole::ROLE_MELEE_DPS) roleName = "Melee DPS";
+    else if (role == BotRole::ROLE_RANGED_DPS) roleName = "Ranged DPS";
 
     // Notify master
-    ChatHandler(master->GetSession()).PSendSysMessage("|cff00ff00{} has joined your party!|r", bot->GetName());
-    LOG_INFO("module", "RPGBots: Bot {} spawned and added to {}'s party", bot->GetName(), master->GetName());
+    ChatHandler(master->GetSession()).PSendSysMessage("|cff00ff00{} has joined your party as {}!|r", bot->GetName(), roleName);
+    LOG_INFO("module", "RPGBots: Bot {} spawned as {} for {}", bot->GetName(), roleName, master->GetName());
 }
 
 // ─── Command Script ────────────────────────────────────────────────────────────
@@ -356,6 +357,7 @@ public:
             { "spawn",   HandleArmySpawnCommand,   SEC_GAMEMASTER, Console::No },
             { "list",    HandleArmyListCommand,    SEC_GAMEMASTER, Console::No },
             { "dismiss", HandleArmyDismissCommand, SEC_GAMEMASTER, Console::No },
+            { "role",    HandleArmyRoleCommand,    SEC_GAMEMASTER, Console::No },
         };
         static ChatCommandTable commandTable =
         {
@@ -486,6 +488,49 @@ public:
         return true;
     }
 
+    // .army role <name> <tank|heal|dps|rdps> — manually override a bot's role
+    static bool HandleArmyRoleCommand(ChatHandler* handler, std::string nameArg, std::string roleArg)
+    {
+        Player* master = handler->GetSession()->GetPlayer();
+        if (!master)
+            return false;
+
+        ObjectGuid::LowType masterLow = master->GetGUID().GetCounter();
+
+        BotInfo* info = sBotMgr.FindBot(masterLow, nameArg);
+        if (!info)
+        {
+            handler->PSendSysMessage("|cffff0000No bot named '{}' found in your army.|r", nameArg);
+            return true;
+        }
+
+        BotRole newRole;
+        if (roleArg == "tank")
+            newRole = BotRole::ROLE_TANK;
+        else if (roleArg == "heal" || roleArg == "healer")
+            newRole = BotRole::ROLE_HEALER;
+        else if (roleArg == "dps" || roleArg == "melee")
+            newRole = BotRole::ROLE_MELEE_DPS;
+        else if (roleArg == "rdps" || roleArg == "ranged")
+            newRole = BotRole::ROLE_RANGED_DPS;
+        else
+        {
+            handler->PSendSysMessage("|cffff0000Unknown role '{}'. Use: tank, heal, dps, rdps|r", roleArg);
+            return true;
+        }
+
+        info->role = newRole;
+
+        const char* roleName = "DPS";
+        if (newRole == BotRole::ROLE_TANK) roleName = "Tank";
+        else if (newRole == BotRole::ROLE_HEALER) roleName = "Healer";
+        else if (newRole == BotRole::ROLE_MELEE_DPS) roleName = "Melee DPS";
+        else if (newRole == BotRole::ROLE_RANGED_DPS) roleName = "Ranged DPS";
+
+        handler->PSendSysMessage("|cff00ff00{} is now set to {}.|r", nameArg, roleName);
+        return true;
+    }
+
     // .army dismiss — dismiss all bot alts
     static bool HandleArmyDismissCommand(ChatHandler* handler)
     {
@@ -494,14 +539,13 @@ public:
             return false;
 
         ObjectGuid::LowType masterLow = master->GetGUID().GetCounter();
-        auto it = s_activeBots.find(masterLow);
-        if (it == s_activeBots.end() || it->second.empty())
+        if (!sBotMgr.HasBots(masterLow))
         {
             handler->PSendSysMessage("|cffff0000You have no bot alts to dismiss.|r");
             return true;
         }
 
-        uint32 count = it->second.size();
+        uint32 count = sBotMgr.GetBots(masterLow)->size();
         DismissAllBots(masterLow);
         handler->PSendSysMessage("|cff00ff00Dismissed {} bot alt(s). Army removed.|r", count);
         return true;
@@ -520,7 +564,7 @@ public:
             return;
 
         ObjectGuid::LowType masterLow = player->GetGUID().GetCounter();
-        if (s_activeBots.count(masterLow))
+        if (sBotMgr.HasBots(masterLow))
         {
             LOG_INFO("module", "RPGBots: Master {} logging out, dismissing all bots", player->GetName());
             DismissAllBots(masterLow);
