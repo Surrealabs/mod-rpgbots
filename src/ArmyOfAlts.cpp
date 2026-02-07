@@ -23,6 +23,8 @@
 #include "BotAI.h"
 #include "BotBehavior.h"
 #include "RPGBotsConfig.h"
+#include "RotationEngine.h"
+#include "SelfBotSystem.h"
 #include <cmath>
 
 using namespace Acore::ChatCommands;
@@ -211,6 +213,10 @@ static void DismissOneBot(BotInfo& entry)
         group->RemoveMember(bot->GetGUID());
 
     // ── Save while still on map ───────────────────────────────────────────
+    // Clear talent rows first — bot talents loaded without isBeingLoaded()
+    // flag get marked as NEW, causing duplicate INSERT on SaveToDB.
+    CharacterDatabase.Execute("DELETE FROM character_talent WHERE guid = {}",
+                              guidLow);
     bot->SaveToDB(false, true);
     CharacterDatabase.Execute("UPDATE characters SET online = 0 WHERE guid = {}",
                               guidLow);
@@ -374,17 +380,16 @@ public:
 
     ChatCommandTable GetCommands() const override
     {
-        static ChatCommandTable spawnSubTable =
-        {
-            { "all",  HandleArmySpawnAllCommand, SEC_GAMEMASTER, Console::No },
-        };
         static ChatCommandTable armyTable =
         {
-            { "spawn",   HandleArmySpawnCommand,   SEC_GAMEMASTER, Console::No },
-            { "spawnal", spawnSubTable },
-            { "list",    HandleArmyListCommand,    SEC_GAMEMASTER, Console::No },
-            { "dismiss", HandleArmyDismissCommand, SEC_GAMEMASTER, Console::No },
-            { "role",    HandleArmyRoleCommand,    SEC_GAMEMASTER, Console::No },
+            { "spawn",    HandleArmySpawnCommand,        SEC_GAMEMASTER, Console::No },
+            { "spawnall", HandleArmySpawnAllCommand,     SEC_GAMEMASTER, Console::No },
+            { "list",     HandleArmyListCommand,         SEC_GAMEMASTER, Console::No },
+            { "dismiss",  HandleArmyDismissCommand,      SEC_GAMEMASTER, Console::No },
+            { "role",     HandleArmyRoleCommand,         SEC_GAMEMASTER, Console::No },
+            { "rotation", HandleArmyShowRotationCommand, SEC_GAMEMASTER, Console::No },
+            { "reload",   HandleArmyReloadCommand,       SEC_GAMEMASTER, Console::No },
+            { "selfbot",  HandleArmySelfBotCommand,      SEC_PLAYER,     Console::No },
         };
         static ChatCommandTable commandTable =
         {
@@ -639,6 +644,96 @@ public:
         else if (newRole == BotRole::ROLE_RANGED_DPS) roleName = "Ranged DPS";
 
         handler->PSendSysMessage("|cff00ff00{} is now set to {}.|r", nameArg, roleName);
+        return true;
+    }
+
+    // .army reload — hot-reload all rotation data from SQL without restart
+    static bool HandleArmyReloadCommand(ChatHandler* handler)
+    {
+        uint32 specs = sRotationEngine.LoadFromDB();
+        handler->PSendSysMessage("|cff00ff00[Army] Reloaded {} spec rotation(s) from bot_rotations.|r", specs);
+        return true;
+    }
+
+    // .army rotation [class_id] [spec_index] — show what's loaded for a spec
+    static bool HandleArmyShowRotationCommand(ChatHandler* handler,
+                                              Optional<uint8> classArg,
+                                              Optional<uint8> specArg)
+    {
+        if (!classArg || !specArg)
+        {
+            handler->PSendSysMessage("|cff00ff00[Army] {} specs loaded.|r",
+                sRotationEngine.GetSpecCount());
+            handler->PSendSysMessage("Usage: .army rotation <class_id> <spec_index>");
+            return true;
+        }
+
+        const SpecRotation* rot = sRotationEngine.GetRotation(*classArg, *specArg);
+        if (!rot)
+        {
+            handler->PSendSysMessage("|cffff0000No rotation for class {} spec {}.|r",
+                *classArg, *specArg);
+            return true;
+        }
+
+        handler->PSendSysMessage("|cff00ff00=== {} ({}) — range {} yd ===|r",
+            rot->specName, BotRoleName(rot->role), rot->preferredRange);
+
+        auto showSlots = [&](const char* label, const std::array<uint32, SPELLS_PER_BUCKET>& arr)
+        {
+            std::string line = std::string(label) + ":";
+            for (uint32 id : arr)
+            {
+                if (id == 0) continue;
+                line += " " + std::to_string(id);
+            }
+            handler->PSendSysMessage("{}", line);
+        };
+
+        showSlots("Abilities",  rot->abilities);
+        showSlots("Buffs",      rot->buffs);
+        showSlots("Defensives", rot->defensives);
+        showSlots("DoTs",       rot->dots);
+        showSlots("HoTs",       rot->hots);
+        showSlots("Mobility",   rot->mobility);
+
+        return true;
+    }
+
+    // .army selfbot — toggle AI autoplay on the player's own character
+    static bool HandleArmySelfBotCommand(ChatHandler* handler)
+    {
+        if (!RPGBotsConfig::SelfBotEnabled)
+        {
+            handler->PSendSysMessage("|cffff0000Selfbot is disabled in server config.|r");
+            return true;
+        }
+
+        Player* player = handler->GetSession()->GetPlayer();
+        if (!player) return false;
+
+        if (IsSelfBotActive(player))
+        {
+            DisableSelfBot(player);
+            player->AttackStop();
+            player->GetMotionMaster()->Clear();
+            handler->PSendSysMessage("|cffff0000Selfbot DISABLED.|r Your character is back under your control.");
+        }
+        else
+        {
+            const SpecRotation* rot = sRotationEngine.GetRotation(
+                player->getClass(), DetectSpecIndex(player));
+            if (!rot)
+            {
+                handler->PSendSysMessage("|cffff0000No rotation found for your class/spec. Selfbot cannot activate.|r");
+                return true;
+            }
+            EnableSelfBot(player);
+            handler->PSendSysMessage("|cff00ff00Selfbot ENABLED.|r Your character will fight automatically.");
+            handler->PSendSysMessage("  Spec: |cffffd700{}|r  Role: |cffffd700{}|r",
+                rot->specName, BotRoleName(DetectBotRole(player)));
+            handler->PSendSysMessage("  Type |cffffd700.army selfbot|r again to disable.");
+        }
         return true;
     }
 

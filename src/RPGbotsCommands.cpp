@@ -6,7 +6,6 @@
 #include "ScriptMgr.h"
 #include "Player.h"
 #include "DatabaseEnv.h"
-#include "RotationEngine.h"
 #include "RPGBotsConfig.h"
 #include <vector>
 #include <random>
@@ -59,8 +58,7 @@ public:
         {
             { "temperament", HandleRandomTemperamentCommand, SEC_PLAYER,     Console::No },
             { "psych",       HandleRandomPsychCommand,       SEC_PLAYER,     Console::No },
-            { "reload",      HandleReloadRotationsCommand,   SEC_GAMEMASTER, Console::No },
-            { "rotation",    HandleShowRotationCommand,      SEC_GAMEMASTER, Console::No },
+            { "reload",      HandleRPGReloadCommand,         SEC_GAMEMASTER, Console::No },
         };
         static ChatCommandTable commandTable =
         {
@@ -119,56 +117,25 @@ public:
         return true;
     }
 
-    // .rpg reload — hot-reload all rotation data from SQL without restart
-    static bool HandleReloadRotationsCommand(ChatHandler* handler)
+    // .rpg reload — reload psych, temperament, and character RPG data
+    static bool HandleRPGReloadCommand(ChatHandler* handler)
     {
-        uint32 specs = sRotationEngine.LoadFromDB();
-        handler->PSendSysMessage("|cff00ff00RPGBots: Reloaded {} spec(s) from bot_rotations.|r", specs);
-        return true;
-    }
+        // Count psych entries
+        QueryResult psychResult = CharacterDatabase.Query("SELECT COUNT(*) FROM rpgbots.rpg_psychology");
+        uint32 psychCount = psychResult ? (*psychResult)[0].Get<uint32>() : 0;
 
-    // .rpg rotation [class_id] [spec_index] — show what's loaded for a spec
-    static bool HandleShowRotationCommand(ChatHandler* handler,
-                                          Optional<uint8> classArg,
-                                          Optional<uint8> specArg)
-    {
-        if (!classArg || !specArg)
-        {
-            handler->PSendSysMessage("|cff00ff00RPGBots: {} specs loaded.|r",
-                sRotationEngine.GetSpecCount());
-            handler->PSendSysMessage("Usage: .rpg rotation <class_id> <spec_index>");
-            return true;
-        }
+        // Count temperament entries
+        QueryResult tempResult = CharacterDatabase.Query("SELECT COUNT(*) FROM rpgbots.rpg_temperaments");
+        uint32 tempCount = tempResult ? (*tempResult)[0].Get<uint32>() : 0;
 
-        const SpecRotation* rot = sRotationEngine.GetRotation(*classArg, *specArg);
-        if (!rot)
-        {
-            handler->PSendSysMessage("|cffff0000No rotation for class {} spec {}.|r",
-                *classArg, *specArg);
-            return true;
-        }
+        // Count character RPG data entries
+        QueryResult charResult = CharacterDatabase.Query("SELECT COUNT(*) FROM rpgbots.character_rpg_data");
+        uint32 charCount = charResult ? (*charResult)[0].Get<uint32>() : 0;
 
-        handler->PSendSysMessage("|cff00ff00=== {} ({}) — range {} yd ===|r",
-            rot->specName, BotRoleName(rot->role), rot->preferredRange);
-
-        auto showSlots = [&](const char* label, const std::array<uint32, SPELLS_PER_BUCKET>& arr)
-        {
-            std::string line = std::string(label) + ":";
-            for (uint32 id : arr)
-            {
-                if (id == 0) continue;
-                line += " " + std::to_string(id);
-            }
-            handler->PSendSysMessage("{}", line);
-        };
-
-        showSlots("Abilities",  rot->abilities);
-        showSlots("Buffs",      rot->buffs);
-        showSlots("Defensives", rot->defensives);
-        showSlots("DoTs",       rot->dots);
-        showSlots("HoTs",       rot->hots);
-        showSlots("Mobility",   rot->mobility);
-
+        handler->PSendSysMessage("|cff00ff00[RPG] Reload complete:|r");
+        handler->PSendSysMessage("  Psychologies: |cffffd700{}|r", psychCount);
+        handler->PSendSysMessage("  Temperaments: |cffffd700{}|r", tempCount);
+        handler->PSendSysMessage("  Character profiles: |cffffd700{}|r", charCount);
         return true;
     }
 };

@@ -13,7 +13,7 @@
 #                     0 - (Disabled)
 #
 
-RPGBots.Psych.Enable = 1
+RPGBots.Psych.Enable = 0
 
 #
 #    RPGBots.SelfBot.Enable

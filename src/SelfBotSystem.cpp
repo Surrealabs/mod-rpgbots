@@ -14,11 +14,10 @@
 
 #include "ScriptMgr.h"
 #include "Player.h"
-#include "Chat.h"
-#include "CommandScript.h"
 #include "BotAI.h"
 #include "RotationEngine.h"
 #include "RPGBotsConfig.h"
+#include "SelfBotSystem.h"
 #include "SpellAuras.h"
 #include "Spell.h"
 #include "SpellInfo.h"
@@ -27,8 +26,6 @@
 #include "Group.h"
 #include <unordered_map>
 #include <unordered_set>
-
-using namespace Acore::ChatCommands;
 
 // ─── Selfbot state per player ──────────────────────────────────────────────────
 struct SelfBotState
@@ -43,12 +40,12 @@ struct SelfBotState
 static std::unordered_map<ObjectGuid::LowType, SelfBotState> sSelfBotPlayers;
 
 // ─── Public toggle helpers ─────────────────────────────────────────────────────
-static bool IsSelfBotActive(Player* player)
+bool IsSelfBotActive(Player* player)
 {
     return sSelfBotPlayers.count(player->GetGUID().GetCounter()) > 0;
 }
 
-static void EnableSelfBot(Player* player)
+void EnableSelfBot(Player* player)
 {
     auto& state = sSelfBotPlayers[player->GetGUID().GetCounter()];
     state.specIndex = DetectSpecIndex(player);
@@ -58,7 +55,7 @@ static void EnableSelfBot(Player* player)
     state.queuedTargetGuid = ObjectGuid::Empty;
 }
 
-static void DisableSelfBot(Player* player)
+void DisableSelfBot(Player* player)
 {
     sSelfBotPlayers.erase(player->GetGUID().GetCounter());
 }
@@ -432,65 +429,8 @@ public:
     }
 };
 
-// ─── Command: .rpg selfbot ─────────────────────────────────────────────────────
-class SelfBotCommandScript : public CommandScript
-{
-public:
-    SelfBotCommandScript() : CommandScript("SelfBotCommandScript") {}
-
-    ChatCommandTable GetCommands() const override
-    {
-        static ChatCommandTable rpgTable =
-        {
-            { "selfbot", HandleSelfBotCommand, SEC_PLAYER, Console::No },
-        };
-        static ChatCommandTable commandTable =
-        {
-            { "rpg", rpgTable },
-        };
-        return commandTable;
-    }
-
-    static bool HandleSelfBotCommand(ChatHandler* handler)
-    {
-        if (!RPGBotsConfig::SelfBotEnabled)
-        {
-            handler->PSendSysMessage("|cffff0000Selfbot is disabled in server config.|r");
-            return true;
-        }
-
-        Player* player = handler->GetSession()->GetPlayer();
-        if (!player) return false;
-
-        if (IsSelfBotActive(player))
-        {
-            DisableSelfBot(player);
-            player->AttackStop();
-            player->GetMotionMaster()->Clear();
-            handler->PSendSysMessage("|cffff0000Selfbot DISABLED.|r Your character is back under your control.");
-        }
-        else
-        {
-            const SpecRotation* rot = sRotationEngine.GetRotation(
-                player->getClass(), DetectSpecIndex(player));
-            if (!rot)
-            {
-                handler->PSendSysMessage("|cffff0000No rotation found for your class/spec. Selfbot cannot activate.|r");
-                return true;
-            }
-            EnableSelfBot(player);
-            handler->PSendSysMessage("|cff00ff00Selfbot ENABLED.|r Your character will fight automatically.");
-            handler->PSendSysMessage("  Spec: |cffffd700{}|r  Role: |cffffd700{}|r",
-                rot->specName, BotRoleName(DetectBotRole(player)));
-            handler->PSendSysMessage("  Type |cffffd700.rpg selfbot|r again to disable.");
-        }
-        return true;
-    }
-};
-
 void AddSelfBotSystem()
 {
     new SelfBotWorldScript();
     new SelfBotPlayerScript();
-    new SelfBotCommandScript();
 }
