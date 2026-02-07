@@ -2,6 +2,8 @@
 
 #include "ScriptMgr.h"
 
+void AddRPGBotsConfig();
+
 void Addmod_rpgbots_PersonalitySystem();
 
 void AddRPGbotsCommands();
@@ -22,7 +24,10 @@ void AddSelfBotSystem();
 
 void Addmod_rpgbotsScripts()
 {
-    // Rotation Engine — loads SQL rotation data at startup (must be first)
+    // Config — must be first so all other systems can read config values
+    AddRPGBotsConfig();
+
+    // Rotation Engine — loads SQL rotation data at startup
     AddRotationEngine();
 
     Addmod_rpgbots_PersonalitySystem();

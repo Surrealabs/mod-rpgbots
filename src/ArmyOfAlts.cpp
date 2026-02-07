@@ -22,6 +22,7 @@
 #include "SocialMgr.h"
 #include "BotAI.h"
 #include "BotBehavior.h"
+#include "RPGBotsConfig.h"
 #include <cmath>
 
 using namespace Acore::ChatCommands;
@@ -433,6 +434,16 @@ public:
         if (!master)
             return false;
 
+        // Enforce max bots limit from config
+        auto* currentBots = sBotMgr.GetBots(master->GetGUID().GetCounter());
+        uint32 botCount = currentBots ? static_cast<uint32>(currentBots->size()) : 0;
+        if (botCount >= RPGBotsConfig::AltArmyMaxBots)
+        {
+            handler->PSendSysMessage("|cffff0000You already have {} bot(s) active (max: {}). Dismiss one first.|r",
+                botCount, RPGBotsConfig::AltArmyMaxBots);
+            return true;
+        }
+
         uint32 accountId = master->GetSession()->GetAccountId();
         ObjectGuid::LowType masterGuidLow = master->GetGUID().GetCounter();
 
@@ -514,12 +525,16 @@ public:
         return true;
     }
 
-    // .army spawn all — spawn every alt on this account
+    // .army spawn all — spawn every alt on this account (up to config limit)
     static bool HandleArmySpawnAllCommand(ChatHandler* handler)
     {
         Player* master = handler->GetSession()->GetPlayer();
         if (!master)
             return false;
+
+        // Count current bots for this master
+        auto* existingBots = sBotMgr.GetBots(master->GetGUID().GetCounter());
+        uint32 currentBots = existingBots ? static_cast<uint32>(existingBots->size()) : 0;
 
         uint32 accountId = master->GetSession()->GetAccountId();
         ObjectGuid::LowType masterGuidLow = master->GetGUID().GetCounter();
@@ -536,6 +551,14 @@ public:
 
         uint32 spawned = 0;
         do {
+            // Enforce max bots limit
+            if (currentBots + spawned >= RPGBotsConfig::AltArmyMaxBots)
+            {
+                handler->PSendSysMessage("|cffffd700Hit max bot limit ({}). Remaining alts skipped.|r",
+                    RPGBotsConfig::AltArmyMaxBots);
+                break;
+            }
+
             Field* fields = result->Fetch();
             uint32 altGuidLow = fields[0].Get<uint32>();
             std::string altName = fields[1].Get<std::string>();

@@ -18,6 +18,7 @@
 #include "CommandScript.h"
 #include "BotAI.h"
 #include "RotationEngine.h"
+#include "RPGBotsConfig.h"
 #include "SpellAuras.h"
 #include "Spell.h"
 #include "SpellInfo.h"
@@ -452,6 +453,12 @@ public:
 
     static bool HandleSelfBotCommand(ChatHandler* handler)
     {
+        if (!RPGBotsConfig::SelfBotEnabled)
+        {
+            handler->PSendSysMessage("|cffff0000Selfbot is disabled in server config.|r");
+            return true;
+        }
+
         Player* player = handler->GetSession()->GetPlayer();
         if (!player) return false;
 

@@ -6,6 +6,7 @@
 #include "Player.h"
 #include "Chat.h"
 #include "Log.h"
+#include "RPGBotsConfig.h"
 
 PersonalitySystem::PersonalitySystem() : PlayerScript("PersonalitySystem",
     {PLAYERHOOK_ON_LOGIN, PLAYERHOOK_ON_LOGOUT, PLAYERHOOK_ON_GIVE_EXP}) {}
@@ -13,6 +14,10 @@ PersonalitySystem::PersonalitySystem() : PlayerScript("PersonalitySystem",
 void PersonalitySystem::OnPlayerLogin(Player* player)
 {
     if (!player)
+        return;
+
+    // If psych system is disabled, skip all personality logic
+    if (!RPGBotsConfig::PsychEnabled)
         return;
 
     uint32 guid = player->GetGUID().GetCounter();

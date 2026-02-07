@@ -7,6 +7,7 @@
 #include "Player.h"
 #include "DatabaseEnv.h"
 #include "RotationEngine.h"
+#include "RPGBotsConfig.h"
 #include <vector>
 #include <random>
 
@@ -70,6 +71,12 @@ public:
 
     static bool HandleRandomTemperamentCommand(ChatHandler* handler)
     {
+        if (!RPGBotsConfig::PsychEnabled)
+        {
+            handler->PSendSysMessage("|cffff0000Psychology/Temperament system is disabled in server config.|r");
+            return true;
+        }
+
         Player* player = handler->GetSession()->GetPlayer();
         if (!player)
             return false;
@@ -89,6 +96,12 @@ public:
 
     static bool HandleRandomPsychCommand(ChatHandler* handler)
     {
+        if (!RPGBotsConfig::PsychEnabled)
+        {
+            handler->PSendSysMessage("|cffff0000Psychology/Temperament system is disabled in server config.|r");
+            return true;
+        }
+
         Player* player = handler->GetSession()->GetPlayer();
         if (!player)
             return false;
