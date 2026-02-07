@@ -31,7 +31,7 @@
 // ─── Constants ─────────────────────────────────────────────────────────────────
 static constexpr uint32 AI_UPDATE_INTERVAL_MS = 1000;
 static constexpr float  MAX_FOLLOW_DISTANCE   = 40.0f;
-static constexpr float  COMBAT_CHASE_MELEE    = 2.0f;
+static constexpr float  COMBAT_CHASE_MELEE    = 0.5f;
 static constexpr float  COMBAT_CHASE_RANGED   = 25.0f;
 static constexpr float  HEAL_THRESHOLD_PCT    = 90.0f;
 static constexpr float  DEFENSIVE_HP_PCT      = 35.0f;
@@ -407,12 +407,16 @@ static void RunWaterfall(Player* bot, Player* master, Unit* enemy,
     // ── Currently casting or channeling — queue next spell, don't interrupt ──
     if (bot->HasUnitState(UNIT_STATE_CASTING))
     {
-        uint32 qSpell = 0;
-        ObjectGuid qTarget;
-        if (ScanWaterfall(bot, master, enemy, rot, qSpell, qTarget))
+        // Only queue if nothing is queued yet — avoid overwriting mid-cast
+        if (info.queuedSpellId == 0)
         {
-            info.queuedSpellId    = qSpell;
-            info.queuedTargetGuid = qTarget;
+            uint32 qSpell = 0;
+            ObjectGuid qTarget;
+            if (ScanWaterfall(bot, master, enemy, rot, qSpell, qTarget))
+            {
+                info.queuedSpellId    = qSpell;
+                info.queuedTargetGuid = qTarget;
+            }
         }
         return;
     }

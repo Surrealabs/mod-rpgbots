@@ -16,6 +16,9 @@ void AddArmyOfAlts();
 void AddRotationEngine();
 void AddBotAI();
 
+void AddBotTalentSystem();
+void AddBotEquipSystem();
+
 void Addmod_rpgbotsScripts()
 {
     // Rotation Engine — loads SQL rotation data at startup (must be first)
@@ -30,4 +33,8 @@ void Addmod_rpgbotsScripts()
 
     // Bot AI — follow, assist, combat (must be after ArmyOfAlts)
     AddBotAI();
+
+    // Talent & Equipment management
+    AddBotTalentSystem();
+    AddBotEquipSystem();
 }
