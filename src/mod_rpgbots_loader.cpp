@@ -18,6 +18,7 @@ void AddBotAI();
 
 void AddBotTalentSystem();
 void AddBotEquipSystem();
+void AddSelfBotSystem();
 
 void Addmod_rpgbotsScripts()
 {
@@ -37,4 +38,7 @@ void Addmod_rpgbotsScripts()
     // Talent & Equipment management
     AddBotTalentSystem();
     AddBotEquipSystem();
+
+    // Selfbot — autoplay mode
+    AddSelfBotSystem();
 }
