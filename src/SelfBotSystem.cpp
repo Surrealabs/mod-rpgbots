@@ -21,11 +21,32 @@
 #include "SpellAuras.h"
 #include "Spell.h"
 #include "SpellInfo.h"
+#include "SpellMgr.h"
+#include "Item.h"
+#include "ItemTemplate.h"
 #include "ObjectAccessor.h"
 #include "Log.h"
 #include "Group.h"
 #include <unordered_map>
 #include <unordered_set>
+
+// ─── Warlock Constants ─────────────────────────────────────────────────────────
+static constexpr uint32 WARLOCK_SOULBURN        = 17877;  // Shadowburn (costs shard)
+static constexpr uint32 SOUL_SHARD_ITEM         = 6265;
+static constexpr uint32 WARLOCK_METAMORPHOSIS   = 47241;
+static constexpr float  META_MANA_THRESHOLD     = 80.0f;
+static constexpr uint32 TALENT_TREE_DESTRUCTION = 301;
+
+// ─── Offensive racial cooldowns (WoTLK) ────────────────────────────────────────
+static constexpr uint32 OFFENSIVE_RACIALS[] = {
+    20572,  // Blood Fury  (Orc – Attack Power)
+    33702,  // Blood Fury  (Orc – Spell Power + AP)
+    26297,  // Berserking  (Troll – Haste)
+    28730,  // Arcane Torrent (Blood Elf – Mana + Silence)
+    25046,  // Arcane Torrent (Blood Elf – Energy + Silence)
+    50613,  // Arcane Torrent (Blood Elf – Runic Power + Silence)
+    20549,  // War Stomp   (Tauren – AoE Stun)
+};
 
 // ─── Selfbot state per player ──────────────────────────────────────────────────
 struct SelfBotState
@@ -76,6 +97,17 @@ static bool CanCastSelf(Player* bot, Unit* target, uint32 spellId)
     if (spellId == 0 || !target)             return false;
     if (!bot->HasSpell(spellId))             return false;
     if (bot->HasSpellCooldown(spellId))      return false;
+
+    // Warlock Shadowburn: only if Destruction AND has a Soul Shard
+    if (spellId == WARLOCK_SOULBURN)
+    {
+        uint32 spec = bot->GetSpec(bot->GetActiveSpec());
+        if (spec != TALENT_TREE_DESTRUCTION)
+            return false;
+        if (bot->GetItemCount(SOUL_SHARD_ITEM) == 0)
+            return false;
+    }
+
     return true;
 }
 
@@ -93,6 +125,14 @@ static bool SelfRunBuffs(Player* bot, const std::array<uint32, SPELLS_PER_BUCKET
     {
         if (id == 0) continue;
         if (bot->HasAura(id)) continue;
+
+        // Warlock Metamorphosis: only pop Meta when mana > 80%
+        if (id == WARLOCK_METAMORPHOSIS)
+        {
+            if (bot->GetPower(POWER_MANA) * 100 / std::max(bot->GetMaxPower(POWER_MANA), 1u) < META_MANA_THRESHOLD)
+                continue;
+        }
+
         if (TryCastSelf(bot, bot, id)) return true;
     }
     return false;
@@ -175,6 +215,84 @@ static bool SelfRunAbilities(Player* bot, Unit* enemy, BotRole role,
         if (id == 0) continue;
         if (TryCastSelf(bot, enemy, id)) return true;
     }
+    return false;
+}
+
+// ─── Mobility: cast on self if out of preferred range ──────────────────────────
+static bool SelfRunMobility(Player* bot, Unit* enemy, float preferredRange,
+                            const std::array<uint32, SPELLS_PER_BUCKET>& spells)
+{
+    if (!enemy) return false;
+    float dx = bot->GetPositionX() - enemy->GetPositionX();
+    float dy = bot->GetPositionY() - enemy->GetPositionY();
+    float dist = std::sqrt(dx * dx + dy * dy);
+    if (dist <= preferredRange + 5.f) return false;
+
+    for (uint32 id : spells)
+    {
+        if (id == 0) continue;
+        if (TryCastSelf(bot, bot, id)) return true;
+    }
+    return false;
+}
+
+// ─── Meta: Trinkets + Racials ──────────────────────────────────────────────────
+// Fires on-use trinkets and offensive racial cooldowns at the start of combat.
+// Runs BEFORE the rotation waterfall — these are "free" throughput boosts.
+static bool SelfRunMeta(Player* bot, Unit* enemy)
+{
+    // ── On-Use Trinkets ────────────────────────────────────────────────────
+    for (uint8 slot : { EQUIPMENT_SLOT_TRINKET1, EQUIPMENT_SLOT_TRINKET2 })
+    {
+        Item* trinket = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!trinket) continue;
+
+        ItemTemplate const* proto = trinket->GetTemplate();
+        for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+        {
+            if (proto->Spells[i].SpellId <= 0) continue;
+            if (proto->Spells[i].SpellTrigger != ITEM_SPELLTRIGGER_ON_USE) continue;
+
+            uint32 spellId = proto->Spells[i].SpellId;
+            if (bot->HasSpellCooldown(spellId)) continue;
+
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info) continue;
+
+            // Skip CC-break trinkets (PvP trinket, etc.) — they're useless if not CC'd
+            bool isCCBreak = false;
+            for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+            {
+                if (info->Effects[e].Effect == SPELL_EFFECT_DISPEL_MECHANIC ||
+                    info->Effects[e].ApplyAuraName == SPELL_AURA_MECHANIC_IMMUNITY)
+                {
+                    isCCBreak = true;
+                    break;
+                }
+            }
+            if (isCCBreak) continue;
+
+            // Positive = self-buff, negative = damage → target enemy
+            Unit* target = info->IsPositive() ? bot : (enemy ? enemy : bot);
+            if (bot->CastSpell(target, spellId, false) == SPELL_CAST_OK)
+                return true;
+        }
+    }
+
+    // ── Offensive Racials ──────────────────────────────────────────────────
+    for (uint32 racialId : OFFENSIVE_RACIALS)
+    {
+        if (!bot->HasSpell(racialId)) continue;
+        if (bot->HasSpellCooldown(racialId)) continue;
+
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(racialId);
+        if (!info) continue;
+
+        Unit* target = info->IsPositive() ? bot : (enemy ? enemy : bot);
+        if (bot->CastSpell(target, racialId, false) == SPELL_CAST_OK)
+            return true;
+    }
+
     return false;
 }
 
@@ -266,6 +384,25 @@ static bool SelfScanWaterfall(Player* bot, Unit* enemy, const SpecRotation* rot,
         }
     }
 
+    // 6. Mobility
+    if (enemy)
+    {
+        float dx = bot->GetPositionX() - enemy->GetPositionX();
+        float dy = bot->GetPositionY() - enemy->GetPositionY();
+        float dist = std::sqrt(dx * dx + dy * dy);
+        if (dist > rot->preferredRange + 5.f)
+        {
+            for (uint32 id : rot->mobility)
+            {
+                if (id == 0) continue;
+                if (CanCastSelf(bot, bot, id))
+                {
+                    outSpellId = id; outTargetGuid = bot->GetGUID(); return true;
+                }
+            }
+        }
+    }
+
     return false;
 }
 
@@ -306,11 +443,13 @@ static void RunSelfBotWaterfall(Player* bot, Unit* enemy,
     }
 
     // Normal waterfall
+    if (SelfRunMeta(bot, enemy)) return;                                       // trinkets + racials
     if (SelfRunBuffs(bot, rot->buffs)) return;
     if (SelfRunDefensives(bot, rot->defensives)) return;
     if (SelfRunDots(bot, enemy, rot->dots)) return;
     if (SelfRunHots(bot, rot->hots)) return;
     if (SelfRunAbilities(bot, enemy, state.role, rot->abilities)) return;
+    SelfRunMobility(bot, enemy, rot->preferredRange, rot->mobility);            // gap closers
 }
 
 // ─── World Script: tick selfbot players ────────────────────────────────────────

@@ -2,6 +2,7 @@
 // Dead-simple priority-queue AI.  One SQL row per spec, 30 spells, 6 buckets.
 //
 // The waterfall every tick (combat only):
+//   0. META        — fire on-use trinkets + offensive racial cooldowns
 //   1. BUFFS       — cast on self if aura missing
 //   2. DEFENSIVES  — cast on self if HP < 35%
 //   3. DOTS        — cast on enemy if aura missing on target
@@ -25,6 +26,9 @@
 #include "SpellAuras.h"
 #include "Spell.h"
 #include "SpellInfo.h"
+#include "SpellMgr.h"
+#include "Item.h"
+#include "ItemTemplate.h"
 #include <cmath>
 #include <algorithm>
 
@@ -42,6 +46,17 @@ static constexpr uint32 SOUL_SHARD_ITEM       = 6265;   // Soul Shard item ID
 
 // Warlock talent tree IDs (for spec checks)
 static constexpr uint32 TALENT_TREE_DESTRUCTION = 301;
+
+// Offensive racial cooldowns (WoTLK)
+static constexpr uint32 OFFENSIVE_RACIALS[] = {
+    20572,  // Blood Fury  (Orc – Attack Power)
+    33702,  // Blood Fury  (Orc – Spell Power + AP)
+    26297,  // Berserking  (Troll – Haste)
+    28730,  // Arcane Torrent (Blood Elf – Mana + Silence)
+    25046,  // Arcane Torrent (Blood Elf – Energy + Silence)
+    50613,  // Arcane Torrent (Blood Elf – Runic Power + Silence)
+    20549,  // War Stomp   (Tauren – AoE Stun)
+};
 
 // ─── Role Auto-Detection ───────────────────────────────────────────────────────
 
@@ -266,6 +281,66 @@ static bool RunMobility(Player* bot, Unit* enemy, float preferredRange,
     return false;
 }
 
+// ─── Meta: Trinkets + Racials ──────────────────────────────────────────────────
+// Fires on-use trinkets and offensive racial cooldowns.
+// Runs BEFORE the rotation waterfall — these are "free" throughput boosts.
+static bool RunMeta(Player* bot, Unit* enemy)
+{
+    // ── On-Use Trinkets ────────────────────────────────────────────────────
+    for (uint8 slot : { EQUIPMENT_SLOT_TRINKET1, EQUIPMENT_SLOT_TRINKET2 })
+    {
+        Item* trinket = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!trinket) continue;
+
+        ItemTemplate const* proto = trinket->GetTemplate();
+        for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+        {
+            if (proto->Spells[i].SpellId <= 0) continue;
+            if (proto->Spells[i].SpellTrigger != ITEM_SPELLTRIGGER_ON_USE) continue;
+
+            uint32 spellId = proto->Spells[i].SpellId;
+            if (bot->HasSpellCooldown(spellId)) continue;
+
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info) continue;
+
+            // Skip CC-break trinkets (PvP trinket, etc.) — they're useless if not CC'd
+            bool isCCBreak = false;
+            for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+            {
+                if (info->Effects[e].Effect == SPELL_EFFECT_DISPEL_MECHANIC ||
+                    info->Effects[e].ApplyAuraName == SPELL_AURA_MECHANIC_IMMUNITY)
+                {
+                    isCCBreak = true;
+                    break;
+                }
+            }
+            if (isCCBreak) continue;
+
+            // Positive = self-buff, negative = damage → target enemy
+            Unit* target = info->IsPositive() ? bot : (enemy ? enemy : bot);
+            if (bot->CastSpell(target, spellId, false) == SPELL_CAST_OK)
+                return true;
+        }
+    }
+
+    // ── Offensive Racials ──────────────────────────────────────────────────
+    for (uint32 racialId : OFFENSIVE_RACIALS)
+    {
+        if (!bot->HasSpell(racialId)) continue;
+        if (bot->HasSpellCooldown(racialId)) continue;
+
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(racialId);
+        if (!info) continue;
+
+        Unit* target = info->IsPositive() ? bot : (enemy ? enemy : bot);
+        if (bot->CastSpell(target, racialId, false) == SPELL_CAST_OK)
+            return true;
+    }
+
+    return false;
+}
+
 // ─── Spell Queue Scanner ───────────────────────────────────────────────────────
 // Scans the waterfall WITHOUT casting.  Returns the first eligible (spell, target)
 // pair that would fire if the bot were free to cast right now.
@@ -439,6 +514,10 @@ static void RunWaterfall(Player* bot, Player* master, Unit* enemy,
     }
 
     // ── Normal waterfall ───────────────────────────────────────────────────
+
+    // 0. Meta — "Pop trinkets & racials"
+    if (RunMeta(bot, enemy))
+        return;
 
     // 1. Buffs — "Is my tax paid?"
     if (RunBuffs(bot, rot->buffs))

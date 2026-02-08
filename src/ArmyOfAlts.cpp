@@ -212,12 +212,15 @@ static void DismissOneBot(BotInfo& entry)
     if (Group* group = bot->GetGroup())
         group->RemoveMember(bot->GetGUID());
 
-    // ── Save while still on map ───────────────────────────────────────────
-    // Clear talent rows first — bot talents loaded without isBeingLoaded()
-    // flag get marked as NEW, causing duplicate INSERT on SaveToDB.
-    CharacterDatabase.Execute("DELETE FROM character_talent WHERE guid = {}",
-                              guidLow);
-    bot->SaveToDB(false, true);
+    // ── Mark offline ────────────────────────────────────────────────────
+    // We intentionally skip SaveToDB() here.  Bot characters are loaded
+    // without the core's m_playerLoading flag (it's private), so every
+    // spell/talent that was read from the DB is internally marked as
+    // PLAYERSPELL_NEW.  Calling SaveToDB() would try to INSERT rows that
+    // already exist and produce duplicate-key errors.
+    //
+    // Any intentional changes (talent fill, equip swaps, etc.) call
+    // SaveToDB() themselves at the point of change — so nothing is lost.
     CharacterDatabase.Execute("UPDATE characters SET online = 0 WHERE guid = {}",
                               guidLow);
 
