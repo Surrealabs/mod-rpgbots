@@ -385,14 +385,15 @@ public:
     {
         static ChatCommandTable armyTable =
         {
-            { "spawn",    HandleArmySpawnCommand,        SEC_GAMEMASTER, Console::No },
-            { "spawnall", HandleArmySpawnAllCommand,     SEC_GAMEMASTER, Console::No },
-            { "list",     HandleArmyListCommand,         SEC_GAMEMASTER, Console::No },
-            { "dismiss",  HandleArmyDismissCommand,      SEC_GAMEMASTER, Console::No },
-            { "role",     HandleArmyRoleCommand,         SEC_GAMEMASTER, Console::No },
-            { "rotation", HandleArmyShowRotationCommand, SEC_GAMEMASTER, Console::No },
-            { "reload",   HandleArmyReloadCommand,       SEC_GAMEMASTER, Console::No },
-            { "selfbot",  HandleArmySelfBotCommand,      SEC_PLAYER,     Console::No },
+                { "spawn",    HandleArmySpawnCommand,        SEC_PLAYER,     Console::No },
+                { "spawnall", HandleArmySpawnAllCommand,     SEC_PLAYER,     Console::No },
+                { "list",     HandleArmyListCommand,         SEC_PLAYER,     Console::No },
+                { "dismiss",  HandleArmyDismissCommand,      SEC_PLAYER,     Console::No },
+                { "dismissone", HandleArmyDismissOneCommand, SEC_PLAYER,     Console::No },
+                { "role",     HandleArmyRoleCommand,         SEC_PLAYER,     Console::No },
+                { "rotation", HandleArmyShowRotationCommand, SEC_PLAYER,     Console::No },
+                { "reload",   HandleArmyReloadCommand,       SEC_GAMEMASTER, Console::No },
+                { "selfbot",  HandleArmySelfBotCommand,      SEC_PLAYER,     Console::No },
         };
         static ChatCommandTable commandTable =
         {
@@ -757,6 +758,26 @@ public:
         uint32 count = sBotMgr.GetBots(masterLow)->size();
         DismissAllBots(masterLow);
         handler->PSendSysMessage("|cff00ff00Dismissed {} bot alt(s). Army removed.|r", count);
+        return true;
+    }
+
+    // .army dismissone <name> — dismiss a single bot by name
+    static bool HandleArmyDismissOneCommand(ChatHandler* handler, std::string name)
+    {
+        Player* master = handler->GetSession()->GetPlayer();
+        if (!master)
+            return false;
+
+        ObjectGuid::LowType masterLow = master->GetGUID().GetCounter();
+        auto removed = sBotMgr.RemoveBot(masterLow, name);
+        if (!removed)
+        {
+            handler->PSendSysMessage("|cffff0000No bot named '%s' found.|r", name.c_str());
+            return true;
+        }
+
+        DismissOneBot(*removed);
+        handler->PSendSysMessage("|cff00ff00Dismissed bot '%s'.|r", name.c_str());
         return true;
     }
 };

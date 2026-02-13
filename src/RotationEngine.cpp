@@ -6,6 +6,33 @@
 #include "DatabaseEnv.h"
 #include "Log.h"
 
+namespace
+{
+uint32 CountKnownSpellsForRotation(Player* bot, SpecRotation const& rot)
+{
+    if (!bot)
+        return 0;
+
+    uint32 score = 0;
+    auto countBucket = [&](std::array<uint32, SPELLS_PER_BUCKET> const& bucket)
+    {
+        for (uint32 spellId : bucket)
+        {
+            if (spellId && bot->HasSpell(spellId))
+                ++score;
+        }
+    };
+
+    countBucket(rot.abilities);
+    countBucket(rot.buffs);
+    countBucket(rot.defensives);
+    countBucket(rot.dots);
+    countBucket(rot.hots);
+    countBucket(rot.mobility);
+    return score;
+}
+}
+
 // ─── String → Enum ─────────────────────────────────────────────────────────────
 
 static BotRole RoleFromString(std::string_view s)
@@ -83,6 +110,52 @@ uint32 RotationEngine::LoadFromDB()
              _rotations.size());
 
     return uint32(_rotations.size());
+}
+
+std::vector<SpecRotation const*> RotationEngine::GetClassRotations(uint8 classId) const
+{
+    std::vector<SpecRotation const*> out;
+    for (auto const& [key, rot] : _rotations)
+    {
+        (void)key;
+        if (rot.classId == classId)
+            out.push_back(&rot);
+    }
+    return out;
+}
+
+uint8 RotationEngine::DetectBestSpecIndex(Player* bot, uint8 fallbackSpecIndex) const
+{
+    if (!bot)
+        return fallbackSpecIndex;
+
+    auto classRots = GetClassRotations(bot->getClass());
+    if (classRots.empty())
+        return fallbackSpecIndex;
+
+    uint8 bestSpec = fallbackSpecIndex;
+    uint32 bestScore = 0;
+
+    for (SpecRotation const* rot : classRots)
+    {
+        if (!rot)
+            continue;
+
+        uint32 score = CountKnownSpellsForRotation(bot, *rot);
+        if (score > bestScore)
+        {
+            bestScore = score;
+            bestSpec = rot->specIndex;
+        }
+    }
+
+    if (bestScore == 0)
+    {
+        // Prefer first available class rotation if no spell evidence yet.
+        return classRots.front()->specIndex;
+    }
+
+    return bestSpec;
 }
 
 // ─── World Script: load at startup ─────────────────────────────────────────────

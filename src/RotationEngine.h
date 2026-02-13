@@ -22,9 +22,11 @@
 #pragma once
 
 #include "BotBehavior.h"
+#include "Player.h"
 #include <string>
 #include <array>
 #include <unordered_map>
+#include <vector>
 
 // ─── Flat Spec Row ─────────────────────────────────────────────────────────────
 // Mirrors the SQL table exactly.  5 spells per bucket, 6 buckets = 30 spells.
@@ -78,6 +80,12 @@ public:
 
     bool   HasRotations() const { return !_rotations.empty(); }
     uint32 GetSpecCount() const { return uint32(_rotations.size()); }
+
+    // Returns all loaded rotations for a class.
+    std::vector<SpecRotation const*> GetClassRotations(uint8 classId) const;
+
+    // Picks the best rotation spec index by matching the bot's known spells.
+    uint8 DetectBestSpecIndex(Player* bot, uint8 fallbackSpecIndex) const;
 
 private:
     RotationEngine() = default;

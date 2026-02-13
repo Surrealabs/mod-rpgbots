@@ -8,6 +8,7 @@
 #include "BotBehavior.h"
 #include <unordered_map>
 #include <vector>
+#include <optional>
 
 // ─── Extended Bot Entry (replaces the simple struct in ArmyOfAlts) ─────────────
 struct BotInfo
@@ -94,6 +95,26 @@ public:
             if (info.player && info.player->GetName() == name)
                 return &info;
         return nullptr;
+    }
+
+    // Remove a single bot by name, return it for cleanup
+    std::optional<BotInfo> RemoveBot(ObjectGuid::LowType masterGuid, const std::string& name)
+    {
+        auto it = _bots.find(masterGuid);
+        if (it == _bots.end()) return std::nullopt;
+        auto& vec = it->second;
+        for (auto vit = vec.begin(); vit != vec.end(); ++vit)
+        {
+            if (vit->player && vit->player->GetName() == name)
+            {
+                BotInfo info = *vit;
+                vec.erase(vit);
+                if (vec.empty())
+                    _bots.erase(it);
+                return info;
+            }
+        }
+        return std::nullopt;
     }
 
 private:

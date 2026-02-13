@@ -35,8 +35,6 @@ static constexpr uint32 WARLOCK_SOULBURN        = 17877;  // Shadowburn (costs s
 static constexpr uint32 SOUL_SHARD_ITEM         = 6265;
 static constexpr uint32 WARLOCK_METAMORPHOSIS   = 47241;
 static constexpr float  META_MANA_THRESHOLD     = 80.0f;
-static constexpr uint32 TALENT_TREE_DESTRUCTION = 301;
-
 // ─── Offensive racial cooldowns (WoTLK) ────────────────────────────────────────
 static constexpr uint32 OFFENSIVE_RACIALS[] = {
     20572,  // Blood Fury  (Orc – Attack Power)
@@ -98,12 +96,9 @@ static bool CanCastSelf(Player* bot, Unit* target, uint32 spellId)
     if (!bot->HasSpell(spellId))             return false;
     if (bot->HasSpellCooldown(spellId))      return false;
 
-    // Warlock Shadowburn: only if Destruction AND has a Soul Shard
+    // Warlock Shadowburn: require soul shard (spec can be custom)
     if (spellId == WARLOCK_SOULBURN)
     {
-        uint32 spec = bot->GetSpec(bot->GetActiveSpec());
-        if (spec != TALENT_TREE_DESTRUCTION)
-            return false;
         if (bot->GetItemCount(SOUL_SHARD_ITEM) == 0)
             return false;
     }

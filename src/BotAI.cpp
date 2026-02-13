@@ -44,9 +44,6 @@ static constexpr float  DEFENSIVE_HP_PCT      = 35.0f;
 static constexpr uint32 WARLOCK_SOULBURN      = 17877;  // Shadowburn (Destro talent, costs shard)
 static constexpr uint32 SOUL_SHARD_ITEM       = 6265;   // Soul Shard item ID
 
-// Warlock talent tree IDs (for spec checks)
-static constexpr uint32 TALENT_TREE_DESTRUCTION = 301;
-
 // Offensive racial cooldowns (WoTLK)
 static constexpr uint32 OFFENSIVE_RACIALS[] = {
     20572,  // Blood Fury  (Orc – Attack Power)
@@ -64,7 +61,7 @@ BotRole DetectBotRole(Player* bot)
 {
     if (!bot) return BotRole::ROLE_MELEE_DPS;
 
-    uint8 specIdx = bot->GetMostPointsTalentTree();
+    uint8 specIdx = DetectSpecIndex(bot);
     const SpecRotation* rot = sRotationEngine.GetRotation(bot->getClass(), specIdx);
     if (rot) return rot->role;
 
@@ -84,7 +81,11 @@ BotRole DetectBotRole(Player* bot)
 
 uint8 DetectSpecIndex(Player* bot)
 {
-    return bot ? bot->GetMostPointsTalentTree() : 0;
+    if (!bot)
+        return 0;
+
+    uint8 fallback = bot->GetMostPointsTalentTree();
+    return sRotationEngine.DetectBestSpecIndex(bot, fallback);
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -139,12 +140,9 @@ static bool CanCast(Player* bot, Unit* target, uint32 spellId)
     if (!bot->HasSpell(spellId))       return false;
     if (bot->HasSpellCooldown(spellId)) return false;
 
-    // Warlock Soulburn (Shadowburn): only if Destruction AND has a Soul Shard
+    // Warlock Soulburn (Shadowburn): require soul shard (spec can be custom)
     if (spellId == WARLOCK_SOULBURN)
     {
-        uint32 spec = bot->GetSpec(bot->GetActiveSpec());
-        if (spec != TALENT_TREE_DESTRUCTION)
-            return false;
         if (bot->GetItemCount(SOUL_SHARD_ITEM) == 0)
             return false;
     }
